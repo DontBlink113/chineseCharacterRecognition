@@ -6,61 +6,63 @@
 //
 
 import SwiftUI
-import SwiftData
+import PencilKit
 
 struct ContentView: View {
-    @Environment(\.modelContext) private var modelContext
-    @Query private var items: [Item]
-
+    @State private var canvasView = PKCanvasView()
+    @State private var toolPicker = PKToolPicker()
+    
     var body: some View {
-        NavigationSplitView {
-            List {
-                ForEach(items) { item in
-                    NavigationLink {
-                        Text("Item at \(item.timestamp, format: Date.FormatStyle(date: .numeric, time: .standard))")
-                    } label: {
-                        Text(item.timestamp, format: Date.FormatStyle(date: .numeric, time: .standard))
-                    }
-                }
-                .onDelete(perform: deleteItems)
+        NavigationView {
+            ZStack {
+                // Lined Paper Background
+                LinedPaperView()
+                    .edgesIgnoringSafeArea(.all)
+                
+                // Drawing Canvas with native tool picker
+                CanvasView(canvasView: $canvasView, toolPicker: toolPicker)
             }
-#if os(macOS)
-            .navigationSplitViewColumnWidth(min: 180, ideal: 200)
-#endif
-            .toolbar {
-#if os(iOS)
-                ToolbarItem(placement: .navigationBarTrailing) {
-                    EditButton()
-                }
-#endif
-                ToolbarItem {
-                    Button(action: addItem) {
-                        Label("Add Item", systemImage: "plus")
-                    }
-                }
-            }
-        } detail: {
-            Text("Select an item")
+            .navigationTitle("Chinese Character Writer")
+            .navigationBarTitleDisplayMode(.inline)
         }
-    }
-
-    private func addItem() {
-        withAnimation {
-            let newItem = Item(timestamp: Date())
-            modelContext.insert(newItem)
-        }
-    }
-
-    private func deleteItems(offsets: IndexSet) {
-        withAnimation {
-            for index in offsets {
-                modelContext.delete(items[index])
-            }
+        .navigationViewStyle(StackNavigationViewStyle())
+        .onAppear {
+            toolPicker.setVisible(true, forFirstResponder: canvasView)
+            toolPicker.addObserver(canvasView)
+            canvasView.becomeFirstResponder()
         }
     }
 }
 
-#Preview {
-    ContentView()
-        .modelContainer(for: Item.self, inMemory: true)
+struct LinedPaperView: View {
+    var lineSpacing: CGFloat = 44 // Slightly larger for better touch targets
+    var lineColor: Color = .gray.opacity(0.3)
+    
+    var body: some View {
+        GeometryReader { geometry in
+            let lineCount = Int(geometry.size.height / lineSpacing) + 1
+            
+            ScrollView {
+                VStack(spacing: 0) {
+                    ForEach(0..<lineCount, id: \.self) { _ in
+                        Rectangle()
+                            .frame(height: 1)
+                            .foregroundColor(lineColor)
+                            .padding(.horizontal, 40)
+                        Spacer()
+                            .frame(height: lineSpacing - 1)
+                    }
+                }
+                .frame(maxWidth: .infinity, minHeight: geometry.size.height)
+                .background(Color.white)
+            }
+        }
+        .background(Color(UIColor.systemGray6))
+    }
+}
+
+struct ContentView_Previews: PreviewProvider {
+    static var previews: some View {
+        ContentView()
+    }
 }
