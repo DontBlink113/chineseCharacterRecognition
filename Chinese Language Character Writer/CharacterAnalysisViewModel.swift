@@ -3,16 +3,11 @@ import Combine
 
 class CharacterAnalysisViewModel: ObservableObject {
     @Published var characters: [String] = []
-    @Published var analysisResults: [CharacterAnalysis] = []
+    @Published var analysisResults: [Character] = []
     @Published var isLoading = false
     @Published var errorMessage: String?
-    @Published var isServerAvailable = false
     
-    private var cancellables = Set<AnyCancellable>()
-    
-    init() {
-        checkServerStatus()
-    }
+    private let characterAnalyzer = CharacterAnalyzer.shared
     
     func analyzeCharacters() {
         guard !characters.isEmpty else { return }
@@ -20,44 +15,31 @@ class CharacterAnalysisViewModel: ObservableObject {
         isLoading = true
         errorMessage = nil
         
-        NetworkManager.shared.analyzeCharacters(characters) { [weak self] result in
+        // Process characters locally
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            guard let self = self else { return }
+            
+            let results = self.characterAnalyzer.analyzeMultiple(characters: self.characters)
+            
             DispatchQueue.main.async {
-                self?.isLoading = false
+                self.isLoading = false
+                self.analysisResults = results
                 
-                switch result {
-                case .success(let analysis):
-                    self?.analysisResults = analysis
-                case .failure(let error):
-                    self?.handleError(error)
+                if results.isEmpty {
+                    self.errorMessage = "No character data found"
                 }
             }
         }
     }
     
-    func checkServerStatus() {
-        NetworkManager.shared.checkServerHealth { [weak self] result in
-            DispatchQueue.main.async {
-                switch result {
-                case .success(let isAvailable):
-                    self?.isServerAvailable = isAvailable
-                case .failure:
-                    self?.isServerAvailable = false
-                }
-            }
-        }
+    func clearResults() {
+        characters = []
+        analysisResults = []
+        errorMessage = nil
     }
     
-    private func handleError(_ error: NetworkError) {
-        switch error {
-        case .invalidURL:
-            errorMessage = "Invalid server URL. Please check your configuration."
-        case .noData:
-            errorMessage = "No data received from the server."
-        case .decodingError:
-            errorMessage = "Error processing the server response."
-        case .serverError(let message):
-            errorMessage = "Server error: \(message)"
-        }
+    private func handleError(_ error: Error) {
+        errorMessage = error.localizedDescription
     }
     
     // Add a new character to analyze

@@ -6,6 +6,12 @@
 	objectVersion = 77;
 	objects = {
 
+/* Begin PBXBuildFile section */
+		013935D82EDB73440041C8D7 /* mmah.json in Resources */ = {isa = PBXBuildFile; fileRef = 013935D72EDB73440041C8D7 /* mmah.json */; };
+		013935D92EDB73440041C8D7 /* mmah.json in Resources */ = {isa = PBXBuildFile; fileRef = 013935D72EDB73440041C8D7 /* mmah.json */; };
+		013935DA2EDB73440041C8D7 /* mmah.json in Resources */ = {isa = PBXBuildFile; fileRef = 013935D72EDB73440041C8D7 /* mmah.json */; };
+/* End PBXBuildFile section */
+
 /* Begin PBXContainerItemProxy section */
 		013935792ECD99A00041C8D7 /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
@@ -27,6 +33,7 @@
 		013935652ECD999F0041C8D7 /* Chinese Language Character Writer.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "Chinese Language Character Writer.app"; sourceTree = BUILT_PRODUCTS_DIR; };
 		013935782ECD99A00041C8D7 /* Chinese Language Character WriterTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = "Chinese Language Character WriterTests.xctest"; sourceTree = BUILT_PRODUCTS_DIR; };
 		013935822ECD99A00041C8D7 /* Chinese Language Character WriterUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = "Chinese Language Character WriterUITests.xctest"; sourceTree = BUILT_PRODUCTS_DIR; };
+		013935D72EDB73440041C8D7 /* mmah.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = mmah.json; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -75,6 +82,7 @@
 		0139355C2ECD999F0041C8D7 = {
 			isa = PBXGroup;
 			children = (
+				013935D72EDB73440041C8D7 /* mmah.json */,
 				013935672ECD999F0041C8D7 /* Chinese Language Character Writer */,
 				0139357B2ECD99A00041C8D7 /* Chinese Language Character WriterTests */,
 				013935852ECD99A00041C8D7 /* Chinese Language Character WriterUITests */,
@@ -212,6 +220,7 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				013935DA2EDB73440041C8D7 /* mmah.json in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -219,6 +228,7 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				013935D82EDB73440041C8D7 /* mmah.json in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -226,6 +236,7 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				013935D92EDB73440041C8D7 /* mmah.json in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
