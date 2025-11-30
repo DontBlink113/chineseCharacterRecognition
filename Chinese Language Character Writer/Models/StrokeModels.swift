@@ -26,16 +26,14 @@ struct StrokeDirection: Equatable {
     }
 }
 
-/// Represents a single point in a stroke with timestamp and optional force/pressure
+/// Represents a single point in a stroke with timestamp
 struct StrokePoint: Equatable {
     let location: CGPoint
     let timestamp: TimeInterval
-    let force: CGFloat?
     
-    init(location: CGPoint, timestamp: TimeInterval = Date().timeIntervalSince1970, force: CGFloat? = nil) {
+    init(location: CGPoint, timestamp: TimeInterval = Date().timeIntervalSince1970) {
         self.location = location
         self.timestamp = timestamp
-        self.force = force
     }
 }
 
@@ -102,14 +100,15 @@ struct Stroke: Identifiable, Equatable {
     }
     
     /// Detects corners in the stroke and splits it into substrokes
-    /// - Parameter angleThreshold: Minimum angle (in radians) to consider a corner (default: 0.5)
-    /// - Parameter distanceThreshold: Minimum distance between points to consider for corner detection (default: 5.0)
-    mutating func detectSubstrokes(angleThreshold: CGFloat = 0.5, distanceThreshold: CGFloat = 5.0) {
-        guard points.count >= 3 else {
-            // Not enough points to detect corners
-            if !points.isEmpty {
-                substrokes = [Substroke(points: points, startIndex: 0, endIndex: points.count - 1)]
-            }
+    /// - Parameter distanceThreshold: Minimum distance between points to consider for corner detection (default: 2.6)
+    ///   Note: This should only be called after the stroke is complete for performance reasons
+    private mutating func detectSubstrokes(distanceThreshold: CGFloat = 2.6) {
+        // Handle cases with fewer than 3 points
+        guard !points.isEmpty else { return }
+        
+        // For 1 or 2 points, create a single substroke
+        if points.count <= 2 {
+            substrokes = [Substroke(points: points, startIndex: 0, endIndex: points.count - 1)]
             return
         }
         
@@ -121,21 +120,16 @@ struct Stroke: Identifiable, Equatable {
             let currPoint = points[i].location
             let nextPoint = points[i+1].location
             
-            let d1 = CGPoint(x: currPoint.x - prevPoint.x, y: currPoint.y - prevPoint.y)
-            let d2 = CGPoint(x: nextPoint.x - currPoint.x, y: nextPoint.y - currPoint.y)
+            let d1 = CGPoint(x: (nextPoint.x - prevPoint.x), y: (nextPoint.y - prevPoint.y))
+            let d2  = CGPoint(x: (currPoint.x - prevPoint.x), y: (currPoint.y - prevPoint.y))
+            let d3 = CGPoint(x: (nextPoint.x - currPoint.x), y: (nextPoint.y - currPoint.y))
             
-            // Skip if points are too close
-            let d1Length = sqrt(d1.x * d1.x + d1.y * d1.y)
-            let d2Length = sqrt(d2.x * d2.x + d2.y * d2.y)
-            guard d1Length > distanceThreshold && d2Length > distanceThreshold else { continue }
+            let distance1 = sqrt(d1.x * d1.x + d1.y * d1.y)
+            let distance2 = sqrt(d2.x * d2.x + d2.y * d2.y) + sqrt(d3.x * d3.x + d3.y * d3.y)
             
-            // Calculate angle between segments
-            let dot = (d1.x * d2.x + d1.y * d2.y)
-            let cross = (d1.x * d2.y - d1.y * d2.x)
-            let angle = abs(atan2(cross, dot))
             
             // If angle is sharp enough, mark as corner
-            if angle > angleThreshold {
+            if abs(distance1 - distance2) > distanceThreshold {
                 cornerIndices.append(i)
             }
         }
@@ -192,11 +186,7 @@ struct Stroke: Identifiable, Equatable {
         if points.count == 1 {
             startTime = point.timestamp
         }
-        
-        // Update substrokes if we have enough points
-        if points.count >= 3 {
-            detectSubstrokes()
-        }
+        // No substroke detection during drawing - deferred to endStroke()
     }
 }
 
@@ -206,6 +196,30 @@ struct CharacterDrawing: Identifiable, Equatable {
     var strokes: [Stroke]
     var startTime: TimeInterval
     var endTime: TimeInterval
+    
+    // MARK: - Computed Properties
+    
+    /// Total number of points across all strokes
+    var totalPoints: Int {
+        strokes.reduce(0) { $0 + $1.points.count }
+    }
+    
+    /// Total number of substrokes
+    var totalSubstrokes: Int {
+        strokes.reduce(0) { $0 + $1.substrokes.count }
+    }
+    
+    /// Average stroke speed in points per second
+    var averageStrokeSpeed: Double {
+        guard !strokes.isEmpty else { return 0 }
+        let totalDuration = duration > 0 ? duration : 0.1 // Avoid division by zero
+        return Double(totalPoints) / totalDuration
+    }
+    
+    /// List of all substrokes across all strokes
+    var allSubstrokes: [Stroke.Substroke] {
+        strokes.flatMap { $0.substrokes }
+    }
     
     /// The bounding rectangle that contains all strokes in the character
     var boundingRect: CGRect {
@@ -268,6 +282,13 @@ class DrawingViewModel: ObservableObject {
     @Published private(set) var currentStroke: Stroke?
     @Published private(set) var currentCharacter: CharacterDrawing
     @Published private(set) var characters: [CharacterDrawing] = []
+    
+    // Point sampling settings
+    private let minimumTimeInterval: TimeInterval = 0.05 // 50ms
+    private let minimumDistanceSquared: CGFloat = 36.0 // 6 points squared (for efficiency)
+    private var lastPointTime: TimeInterval = 0
+    private var lastPoint: CGPoint?
+    
     @Published var isInCharacterMode: Bool = false {
         didSet {
             if !isInCharacterMode && !currentCharacter.strokes.isEmpty {
@@ -285,42 +306,75 @@ class DrawingViewModel: ObservableObject {
     // MARK: - Public Methods
     
     /// Call this when a new touch begins
-    func beginStroke(at location: CGPoint, force: CGFloat? = nil) {
+    func beginStroke(at location: CGPoint) {
         // If not in character mode, start a new character
         if !isInCharacterMode && !currentCharacter.strokes.isEmpty {
             characters.append(currentCharacter)
             currentCharacter = CharacterDrawing()
         }
         
-        let point = StrokePoint(location: location, timestamp: Date().timeIntervalSince1970, force: force)
+        let now = Date().timeIntervalSince1970
+        lastPointTime = now
+        lastPoint = location
+        
+        let point = StrokePoint(location: location, timestamp: now)
         currentStroke = Stroke(points: [point])
     }
     
     /// Call this when the touch moves
-    func continueStroke(at location: CGPoint, force: CGFloat? = nil) {
+    func continueStroke(at location: CGPoint) {
         guard var stroke = currentStroke else { return }
-        let point = StrokePoint(location: location, timestamp: Date().timeIntervalSince1970, force: force)
-        stroke.addPoint(point)
-        currentStroke = stroke
+        
+        let now = Date().timeIntervalSince1970
+        let timeSinceLastPoint = now - lastPointTime
+        
+        // Check if enough time has passed and point is far enough from last point
+        if timeSinceLastPoint >= minimumTimeInterval,
+           let lastLocation = lastPoint,
+           distanceSquared(from: lastLocation, to: location) >= minimumDistanceSquared {
+            
+            lastPointTime = now
+            lastPoint = location
+            
+            let point = StrokePoint(location: location, timestamp: now)
+            stroke.addPoint(point)
+            currentStroke = stroke
+        }
+    }
+    
+    /// Calculate squared distance between two points (more efficient than calculating actual distance)
+    private func distanceSquared(from point1: CGPoint, to point2: CGPoint) -> CGFloat {
+        let dx = point2.x - point1.x
+        let dy = point2.y - point1.y
+        return dx * dx + dy * dy
     }
     
     /// Call this when the touch ends
     func endStroke() {
-        guard let stroke = currentStroke, !stroke.points.isEmpty else {
+        guard var stroke = currentStroke, !stroke.points.isEmpty else {
             currentStroke = nil
+            lastPoint = nil
             return
         }
         
-        var finalStroke = stroke
         // Ensure we have at least 2 points for a valid stroke
-        if finalStroke.points.count == 1 {
-            let point = finalStroke.points[0]
-            finalStroke.addPoint(StrokePoint(location: CGPoint(x: point.location.x + 0.1, y: point.location.y + 0.1), 
-                                           timestamp: point.timestamp + 0.01, 
-                                           force: point.force))
+        if stroke.points.count == 1, let lastLocation = lastPoint {
+            // Add a second point slightly offset from the first if we only have one point
+            stroke.addPoint(StrokePoint(location: CGPoint(x: lastLocation.x + 1, y: lastLocation.y + 1), 
+                                     timestamp: Date().timeIntervalSince1970))
         }
         
-        currentCharacter.addStroke(finalStroke)
+        // Perform substroke detection for all strokes with 2+ points
+        // Only process if we have enough points to make it worthwhile
+        if stroke.points.count >= 2 {
+            // Create a copy to avoid mutating the stroke while it's being used for drawing
+            var strokeCopy = stroke
+            strokeCopy.detectSubstrokes()
+            stroke = strokeCopy
+        }
+        
+        // Add the processed stroke to the current character
+        currentCharacter.addStroke(stroke)
         currentStroke = nil
     }
     

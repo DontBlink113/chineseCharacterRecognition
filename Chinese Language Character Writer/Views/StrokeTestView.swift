@@ -3,6 +3,16 @@ import SwiftUI
 struct StrokeTestView: View {
     @StateObject private var viewModel = DrawingViewModel()
     @State private var showInfo = false
+    @State private var showingCharacterData = false
+    @State private var selectedCharacter: CharacterDrawing?
+    
+    private var allCharacters: [CharacterDrawing] {
+        var characters = viewModel.characters
+        if !viewModel.currentCharacter.strokes.isEmpty {
+            characters.append(viewModel.currentCharacter)
+        }
+        return characters
+    }
     
     var body: some View {
         VStack(spacing: 0) {
@@ -108,6 +118,29 @@ struct StrokeTestView: View {
             }
             .padding(.vertical, 8)
             .background(Color(UIColor.systemGroupedBackground))
+            
+            // Add View Data button
+            Button(action: {
+                showingCharacterData = true
+            }) {
+                Text("View Character Data")
+                    .frame(maxWidth: .infinity)
+                    .padding()
+                    .background(Color.blue)
+                    .foregroundColor(.white)
+                    .cornerRadius(10)
+            }
+            .padding(.horizontal)
+            .disabled(viewModel.currentCharacter.strokes.isEmpty && viewModel.characters.isEmpty)
+            .sheet(isPresented: $showingCharacterData) {
+                NavigationView {
+                    if !viewModel.currentCharacter.strokes.isEmpty {
+                        CharacterDataView(character: viewModel.currentCharacter)
+                    } else if let lastCharacter = viewModel.characters.last {
+                        CharacterDataView(character: lastCharacter)
+                    }
+                }
+            }
         }
     }
 }
