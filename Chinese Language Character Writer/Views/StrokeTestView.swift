@@ -5,7 +5,17 @@ struct StrokeTestView: View {
     @State private var showInfo = false
     @State private var showingCharacterData = false
     @State private var selectedCharacter: CharacterDrawing?
-    
+
+    // State for showing a specific dataset character
+    @State private var showCharacterInput = false
+    @State private var inputCharacter: String = ""
+    @State private var showDatasetCharacter = false
+    @State private var datasetCharacter: Character?
+    @State private var inputError: String?
+    private let analyzer = CharacterAnalyzer.shared
+
+
+    //This array contains the completed characters
     private var allCharacters: [CharacterDrawing] {
         var characters = viewModel.characters
         if !viewModel.currentCharacter.strokes.isEmpty {
@@ -39,6 +49,13 @@ struct StrokeTestView: View {
                     ForEach(viewModel.currentCharacter.strokes.flatMap { $0.substrokes }) { substroke in
                         SubstrokeInfoView(substroke: substroke)
                     }
+                }
+                
+                // Overlay: Show dataset character details
+                if showDatasetCharacter, let char = datasetCharacter {
+                    RandomCharacterView(character: char, isPresented: $showDatasetCharacter)
+                        .transition(.move(edge: .bottom))
+                        .zIndex(1)
                 }
             }
             .gesture(
@@ -115,6 +132,62 @@ struct StrokeTestView: View {
                     }
                 }
                 .padding(.horizontal)
+                
+                // Show Specific Character button (styled like "Show Random Character")
+                Button(action: {
+                    inputCharacter = ""
+                    inputError = nil
+                    showCharacterInput = true
+                }) {
+                    Text("Show Specific Character")
+                        .font(.headline)
+                        .foregroundColor(.white)
+                        .padding()
+                        .frame(maxWidth: .infinity)
+                        .background(Color.green)
+                        .cornerRadius(10)
+                }
+                .padding(.horizontal)
+                .sheet(isPresented: $showCharacterInput) {
+                    NavigationView {
+                        VStack(spacing: 16) {
+                            Text("Enter a Chinese character")
+                                .font(.headline)
+                            TextField("e.g. 你", text: $inputCharacter)
+                                .textFieldStyle(RoundedBorderTextFieldStyle())
+                                .padding(.horizontal)
+                            if let error = inputError {
+                                Text(error)
+                                    .foregroundColor(.red)
+                                    .font(.footnote)
+                            }
+                            HStack {
+                                Button("Cancel") {
+                                    inputCharacter = ""
+                                    inputError = nil
+                                    showCharacterInput = false
+                                }
+                                Spacer()
+                                Button("Show") {
+                                    let query = inputCharacter.trimmingCharacters(in: .whitespacesAndNewlines)
+                                    if query.isEmpty {
+                                        inputError = "Please enter a character."
+                                    } else if let result = analyzer.analyze(character: query) {
+                                        datasetCharacter = result
+                                        inputError = nil
+                                        showCharacterInput = false
+                                        withAnimation { showDatasetCharacter = true }
+                                    } else {
+                                        inputError = "Character not found in dataset."
+                                    }
+                                }
+                            }
+                            .padding(.horizontal)
+                            Spacer()
+                        }
+                        .padding()
+                    }
+                }
             }
             .padding(.vertical, 8)
             .background(Color(UIColor.systemGroupedBackground))
