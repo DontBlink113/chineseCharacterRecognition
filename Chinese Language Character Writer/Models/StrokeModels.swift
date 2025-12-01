@@ -102,7 +102,7 @@ struct Stroke: Identifiable, Equatable {
     /// Detects corners in the stroke and splits it into substrokes
     /// - Parameter distanceThreshold: Minimum distance between points to consider for corner detection (default: 2.6)
     ///   Note: This should only be called after the stroke is complete for performance reasons
-    mutating func detectSubstrokes(distanceThreshold: CGFloat = 2.6) {
+    internal mutating func detectSubstrokes(distanceThreshold: CGFloat = 2.6) {
         // Handle cases with fewer than 3 points
         guard !points.isEmpty else { return }
         
