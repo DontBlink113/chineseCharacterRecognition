@@ -51,6 +51,7 @@ struct Stroke: Identifiable, Equatable {
         let startIndex: Int
         let endIndex: Int
         let points: [StrokePoint]
+        var normalizedCenter: CGPoint? = nil
         
         /// The direction vector of the substroke (from start to end)
         var direction: CGVector {
@@ -99,6 +100,7 @@ struct Stroke: Identifiable, Equatable {
             self.points = points
             self.startIndex = startIndex
             self.endIndex = endIndex
+            self.normalizedCenter = nil
         }
     }
     
@@ -150,6 +152,25 @@ struct Stroke: Identifiable, Equatable {
         }
         
         self.substrokes = newSubstrokes
+    }
+
+    /// Assigns normalized centers to each substroke using bounding-box normalization.
+    /// Mapping: nx = (x - minX) / width, ny = (y - minY) / height, clamped to [0,1].
+    /// - Parameter referenceRect: The rectangle to normalize against (typically the character bounding box)
+    internal mutating func assignNormalizedCenters(relativeTo referenceRect: CGRect) {
+        guard referenceRect.width > 0, referenceRect.height > 0 else { return }
+        var updated: [Substroke] = []
+        updated.reserveCapacity(substrokes.count)
+        for var s in substrokes {
+            let nx = (s.center.x - referenceRect.minX) / referenceRect.width
+            let ny = (s.center.y - referenceRect.minY) / referenceRect.height
+            // Clamp to [0,1] to ensure values are within bounds even with noise
+            let clampedX = max(0, min(1, nx))
+            let clampedY = max(0, min(1, ny))
+            s.normalizedCenter = CGPoint(x: clampedX, y: clampedY)
+            updated.append(s)
+        }
+        self.substrokes = updated
     }
     
     /// The bounding rectangle that contains all points in the stroke
@@ -277,6 +298,44 @@ struct CharacterDrawing: Identifiable, Equatable {
         startTime = now
         endTime = now
     }
+
+    /// Compute the extended bounding box (adds 33% of width/height on each side)
+    var extendedBoundingRect: CGRect {
+        let rect = boundingRect
+        let dx = rect.width * 0.33
+        let dy = rect.height * 0.33
+        // If rect has zero width/height, provide a minimal size to avoid division by zero downstream
+        var extended = rect.insetBy(dx: -dx, dy: -dy)
+        if extended.width == 0 { extended.size.width = 1 }
+        if extended.height == 0 { extended.size.height = 1 }
+        return extended
+    }
+
+    /// Bounding box computed from substroke centers (not ink), across all strokes
+    var centerBasedBoundingRect: CGRect {
+        let centers: [CGPoint] = strokes.flatMap { stroke in
+            stroke.substrokes.map { $0.center }
+        }
+        guard !centers.isEmpty else { return .zero }
+        let xs = centers.map { $0.x }
+        let ys = centers.map { $0.y }
+        let minX = xs.min() ?? 0
+        let maxX = xs.max() ?? 0
+        let minY = ys.min() ?? 0
+        let maxY = ys.max() ?? 0
+        var rect = CGRect(x: minX, y: minY, width: maxX - minX, height: maxY - minY)
+        if rect.width == 0 { rect.size.width = 1 }
+        if rect.height == 0 { rect.size.height = 1 }
+        return rect
+    }
+
+    /// Assign normalized centers for all substrokes in this character using the character bounding rect and its center
+    mutating func assignNormalizedCentersToSubstrokes() {
+        let ref = centerBasedBoundingRect
+        for i in strokes.indices {
+            strokes[i].assignNormalizedCenters(relativeTo: ref)
+        }
+    }
 }
 
 /// A view model to manage the drawing state
@@ -389,7 +448,10 @@ class DrawingViewModel: ObservableObject {
     /// Complete the current character and start a new one
     func completeCurrentCharacter() {
         guard !currentCharacter.strokes.isEmpty else { return }
-        characters.append(currentCharacter)
+        // Calculate normalized centers with respect to the extended bounding box before saving
+        var finalized = currentCharacter
+        finalized.assignNormalizedCentersToSubstrokes()
+        characters.append(finalized)
         currentCharacter = CharacterDrawing()
     }
     
