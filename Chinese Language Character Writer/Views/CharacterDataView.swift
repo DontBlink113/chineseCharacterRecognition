@@ -85,7 +85,7 @@ private struct StrokeDetailView: View {
                         HStack {
                             Text("• Substroke \(index + 1):")
                                 .font(.caption)
-                            Text(String(format: "%.1f° • ", substroke.angle * 180 / .pi))
+                            Text(String(format: "%.2f rad • ", substroke.angle))
                                 .font(.caption.monospaced())
                             Text(String(format: "%.1f pts", substroke.magnitude))
                                 .font(.caption.monospaced())
