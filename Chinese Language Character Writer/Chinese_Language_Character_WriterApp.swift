@@ -13,7 +13,7 @@ struct Chinese_Language_Character_WriterApp: App {
         WindowGroup {
             NavigationStack {
                 StrokeTestView()
-                    .navigationTitle("Stroke Tester")
+                    .navigationTitle("Chinese Character Autograder")
                     .navigationBarTitleDisplayMode(.inline)
             }
             .navigationViewStyle(.stack) // This ensures a standard navigation stack on all devices

@@ -80,9 +80,12 @@ struct Stroke: Identifiable, Equatable {
             return CGPoint(x: (minX + maxX) / 2, y: (minY + maxY) / 2)
         }
         
-        /// The angle of the substroke in radians (0 to 2π)
+        /// The angle of the substroke in radians in standard math orientation (0 = right, π/2 = up, π = left, 3π/2 = down)
         var angle: CGFloat {
-            return atan2(direction.dy, direction.dx)
+            // In UIKit/SwiftUI, Y increases downward. Invert Y to match math convention (Y up).
+            // Then normalize to [0, 2π), so a pure down stroke maps to 3π/2.
+            let raw = atan2(-direction.dy, direction.dx)
+            return raw >= 0 ? raw : raw + 2 * .pi
         }
         
         /// The normalized direction vector (unit vector)

@@ -5,7 +5,17 @@ struct StrokeTestView: View {
     @State private var showInfo = false
     @State private var showingCharacterData = false
     @State private var selectedCharacter: CharacterDrawing?
-    
+
+    // State for showing a specific dataset character
+    @State private var showCharacterInput = false
+    @State private var inputCharacter: String = ""
+    @State private var datasetCharacter: Character?
+    @State private var inputError: String?
+    @State private var isPanelVisible: Bool = true
+    private let analyzer = CharacterAnalyzer.shared
+
+
+    //This array contains the completed characters
     private var allCharacters: [CharacterDrawing] {
         var characters = viewModel.characters
         if !viewModel.currentCharacter.strokes.isEmpty {
@@ -115,13 +125,69 @@ struct StrokeTestView: View {
                     }
                 }
                 .padding(.horizontal)
+                
+                // Show Specific Character button (styled like "Show Random Character")
+                Button(action: {
+                    inputCharacter = ""
+                    inputError = nil
+                    showCharacterInput = true
+                }) {
+                    Text("Show Specific Character")
+                        .font(.headline)
+                        .foregroundColor(.white)
+                        .padding()
+                        .frame(maxWidth: .infinity)
+                        .background(Color.green)
+                        .cornerRadius(10)
+                }
+                .padding(.horizontal)
+                .sheet(isPresented: $showCharacterInput) {
+                    NavigationView {
+                        VStack(spacing: 16) {
+                            Text("Enter a Chinese character")
+                                .font(.headline)
+                            TextField("e.g. 你", text: $inputCharacter)
+                                .textFieldStyle(RoundedBorderTextFieldStyle())
+                                .padding(.horizontal)
+                            if let error = inputError {
+                                Text(error)
+                                    .foregroundColor(.red)
+                                    .font(.footnote)
+                            }
+                            HStack {
+                                Button("Cancel") {
+                                    inputCharacter = ""
+                                    inputError = nil
+                                    showCharacterInput = false
+                                }
+                                Spacer()
+                                Button("Show") {
+                                    let query = inputCharacter.trimmingCharacters(in: .whitespacesAndNewlines)
+                                    if query.isEmpty {
+                                        inputError = "Please enter a character."
+                                    } else if let result = analyzer.analyze(character: query) {
+                                        datasetCharacter = result
+                                        inputError = nil
+                                        showCharacterInput = false
+                                        withAnimation { isPanelVisible = true }
+                                    } else {
+                                        inputError = "Character not found in dataset."
+                                    }
+                                }
+                            }
+                            .padding(.horizontal)
+                            Spacer()
+                        }
+                        .padding()
+                    }
+                }
             }
             .padding(.vertical, 8)
             .background(Color(UIColor.systemGroupedBackground))
             
             // Add View Data button
             Button(action: {
-                showingCharacterData = true
+                showingCharacterData.toggle()
             }) {
                 Text("View Character Data")
                     .frame(maxWidth: .infinity)
@@ -132,13 +198,29 @@ struct StrokeTestView: View {
             }
             .padding(.horizontal)
             .disabled(viewModel.currentCharacter.strokes.isEmpty && viewModel.characters.isEmpty)
-            .sheet(isPresented: $showingCharacterData) {
-                NavigationView {
-                    if !viewModel.currentCharacter.strokes.isEmpty {
-                        CharacterDataView(character: viewModel.currentCharacter)
-                    } else if let lastCharacter = viewModel.characters.last {
-                        CharacterDataView(character: lastCharacter)
-                    }
+        }
+        .overlay(alignment: .trailing) {
+            if isPanelVisible {
+                RightSidePanel(
+                    datasetCharacter: datasetCharacter,
+                    showingDrawnData: showingCharacterData,
+                    currentCharacter: viewModel.currentCharacter,
+                    lastCompleted: viewModel.characters.last,
+                    onClose: { withAnimation { isPanelVisible = false } }
+                )
+                .frame(width: 360)
+                .background(Color(.systemBackground))
+                .shadow(radius: 4)
+            } else {
+                // Small floating button to restore the panel
+                Button(action: { withAnimation { isPanelVisible = true } }) {
+                    Image(systemName: "sidebar.left")
+                        .font(.title3)
+                        .padding(10)
+                        .background(Color(.systemBackground))
+                        .clipShape(Capsule())
+                        .shadow(radius: 2)
+                        .padding(.trailing, 8)
                 }
             }
         }
@@ -236,13 +318,113 @@ private struct SubstrokeInfoView: View {
                 .position(substroke.center)
             
             // Draw info text
-            Text(String(format: "%.1f°, %.1f", substroke.angle * 180 / .pi, substroke.magnitude))
+            Text(String(format: "%.2f rad, %.1f", substroke.angle, substroke.magnitude))
                 .font(.system(size: 10, weight: .bold))
                 .foregroundColor(.black)
                 .padding(4)
                 .background(Color.white.opacity(0.7))
                 .cornerRadius(4)
                 .position(x: substroke.center.x, y: substroke.center.y + 20)
+        }
+    }
+}
+
+// MARK: - Right Side Panel
+
+private struct RightSidePanel: View {
+    let datasetCharacter: Character?
+    let showingDrawnData: Bool
+    let currentCharacter: CharacterDrawing
+    let lastCompleted: CharacterDrawing?
+    let onClose: () -> Void
+    
+    private var drawnCharacterToShow: CharacterDrawing? {
+        guard showingDrawnData else { return nil }
+        if !currentCharacter.strokes.isEmpty { return currentCharacter }
+        return lastCompleted
+    }
+    
+    var body: some View {
+        VStack(spacing: 0) {
+            // Header
+            HStack {
+                Text("Details Panel")
+                    .font(.headline)
+                Spacer()
+                Button(action: onClose) {
+                    Image(systemName: "sidebar.right")
+                        .font(.headline)
+                        .foregroundColor(.secondary)
+                }
+            }
+            .padding()
+            Divider()
+            
+            ScrollView {
+                VStack(alignment: .leading, spacing: 16) {
+                    // Dataset Character Section
+                    Section {
+                        if let char = datasetCharacter {
+                            DatasetCharacterPanel(character: char)
+                        } else {
+                            Text("No dataset character selected.")
+                                .foregroundColor(.secondary)
+                        }
+                    } header: {
+                        Text("Dataset Character")
+                            .font(.subheadline.bold())
+                            .foregroundColor(.secondary)
+                    }
+                    
+                    // Drawn Character Section
+                    Section {
+                        if let drawn = drawnCharacterToShow {
+                            CharacterDataView(character: drawn)
+                        } else if showingDrawnData {
+                            Text("No drawn character available yet.")
+                                .foregroundColor(.secondary)
+                        } else {
+                            Text("Tap 'View Character Data' to show details for your drawing here.")
+                                .foregroundColor(.secondary)
+                        }
+                    } header: {
+                        Text("Drawn Character")
+                            .font(.subheadline.bold())
+                            .foregroundColor(.secondary)
+                    }
+                }
+                .padding()
+            }
+        }
+    }
+}
+
+private struct DatasetCharacterPanel: View {
+    let character: Character
+    
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            // Big character display
+            Text(character.character)
+                .font(.system(size: 80))
+                .frame(maxWidth: .infinity)
+                .frame(height: 140)
+                .background(Color(.systemGray6))
+                .cornerRadius(12)
+            
+            // Stats
+            VStack(alignment: .leading, spacing: 12) {
+                InfoRow(title: "Stroke Count", value: "\(character.strokeCount)")
+                InfoRow(title: "Substroke Count", value: "\(character.substrokeCount)")
+            }
+            .padding()
+            .background(Color(.systemGray6))
+            .cornerRadius(12)
+            
+            // Substrokes
+            if !character.substrokes.isEmpty {
+                SubStrokesView(substrokes: character.substrokes)
+            }
         }
     }
 }
