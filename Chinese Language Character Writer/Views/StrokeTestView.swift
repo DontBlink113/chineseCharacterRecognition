@@ -402,6 +402,23 @@ private struct RightSidePanel: View {
 private struct DatasetCharacterPanel: View {
     let character: Character
     
+    // Compute per-character bounding box over dataset substroke centers (0..1 space)
+    private var bbox: (minX: Double, maxX: Double, minY: Double, maxY: Double) {
+        let xs = character.substrokes.map { $0.centerX }
+        let ys = character.substrokes.map { $0.centerY }
+        let minX = xs.min() ?? 0.0
+        let maxX = xs.max() ?? 1.0
+        let minY = ys.min() ?? 0.0
+        let maxY = ys.max() ?? 1.0
+        return (minX, maxX, minY, maxY)
+    }
+    
+    private func renorm(_ value: Double, minX: Double, maxX: Double) -> Double {
+        guard maxX > minX else { return 0.5 }
+        let n = (value - minX) / (maxX - minX)
+        return Swift.min(1.0, Swift.max(0.0, n))
+    }
+    
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             // Big character display
@@ -421,9 +438,27 @@ private struct DatasetCharacterPanel: View {
             .background(Color(.systemGray6))
             .cornerRadius(12)
             
-            // Substrokes
+            // Substrokes (raw and bbox-normalized centers)
             if !character.substrokes.isEmpty {
-                SubStrokesView(substrokes: character.substrokes)
+                VStack(alignment: .leading, spacing: 12) {
+                    Text("Sub-strokes (dataset)")
+                        .font(.subheadline.bold())
+                        .foregroundColor(.secondary)
+                    
+                    ForEach(Array(character.substrokes.enumerated()), id: \.offset) { index, s in
+                        let nx = renorm(s.centerX, minX: bbox.minX, maxX: bbox.maxX)
+                        let ny = renorm(s.centerY, minX: bbox.minY, maxX: bbox.maxY)
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("\(index + 1). dir: \(String(format: "%.2f", s.direction)) rad  len: \(String(format: "%.2f", s.length))")
+                                .font(.caption.monospaced())
+                            Text("    raw center: (\(String(format: "%.2f", s.centerX)), \(String(format: "%.2f", s.centerY)))  bbox: (\(String(format: "%.2f", nx)), \(String(format: "%.2f", ny)))")
+                                .font(.caption.monospaced())
+                        }
+                        .padding(6)
+                        .background(index % 2 == 0 ? Color(.systemGray6) : Color(.systemBackground))
+                        .cornerRadius(6)
+                    }
+                }
             }
         }
     }

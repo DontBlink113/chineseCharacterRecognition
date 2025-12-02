@@ -91,6 +91,10 @@ private struct StrokeDetailView: View {
                                 .font(.caption.monospaced())
                             Text("@ (\(Int(substroke.center.x)), \(Int(substroke.center.y)))")
                                 .font(.caption.monospaced())
+                            if let norm = substroke.normalizedCenter {
+                                Text(String(format: " norm: (%.2f, %.2f)", norm.x, norm.y))
+                                    .font(.caption.monospaced())
+                            }
                         }
                     }
                 }
