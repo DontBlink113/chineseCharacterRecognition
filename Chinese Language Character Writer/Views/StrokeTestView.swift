@@ -12,6 +12,7 @@ struct StrokeTestView: View {
     @State private var datasetCharacter: Character?
     @State private var inputError: String?
     @State private var isPanelVisible: Bool = true
+    @State private var bestMatchCost: Double? = nil
     private let analyzer = CharacterAnalyzer.shared
 
 
@@ -181,6 +182,28 @@ struct StrokeTestView: View {
                         .padding()
                     }
                 }
+
+                // Find Best Match button
+                Button(action: {
+                    bestMatchCost = nil
+                    if let result = analyzer.bestMatch(for: viewModel.currentCharacter) {
+                        datasetCharacter = result.character
+                        bestMatchCost = result.cost
+                        withAnimation { isPanelVisible = true }
+                    } else {
+                        inputError = "No match found (insufficient data or no candidates)."
+                    }
+                }) {
+                    Text("Find Best Match")
+                        .font(.headline)
+                        .foregroundColor(.white)
+                        .padding()
+                        .frame(maxWidth: .infinity)
+                        .background(Color.purple)
+                        .cornerRadius(10)
+                }
+                .padding(.horizontal)
+                .disabled(viewModel.currentCharacter.allSubstrokes.isEmpty)
             }
             .padding(.vertical, 8)
             .background(Color(UIColor.systemGroupedBackground))
@@ -203,6 +226,7 @@ struct StrokeTestView: View {
             if isPanelVisible {
                 RightSidePanel(
                     datasetCharacter: datasetCharacter,
+                    matchCost: bestMatchCost,
                     showingDrawnData: showingCharacterData,
                     currentCharacter: viewModel.currentCharacter,
                     lastCompleted: viewModel.characters.last,
@@ -333,6 +357,7 @@ private struct SubstrokeInfoView: View {
 
 private struct RightSidePanel: View {
     let datasetCharacter: Character?
+    let matchCost: Double?
     let showingDrawnData: Bool
     let currentCharacter: CharacterDrawing
     let lastCompleted: CharacterDrawing?
@@ -365,7 +390,7 @@ private struct RightSidePanel: View {
                     // Dataset Character Section
                     Section {
                         if let char = datasetCharacter {
-                            DatasetCharacterPanel(character: char)
+                            DatasetCharacterPanel(character: char, matchCost: matchCost)
                         } else {
                             Text("No dataset character selected.")
                                 .foregroundColor(.secondary)
@@ -401,6 +426,7 @@ private struct RightSidePanel: View {
 
 private struct DatasetCharacterPanel: View {
     let character: Character
+    let matchCost: Double?
     
     // Compute per-character bounding box over dataset substroke centers (0..1 space)
     private var bbox: (minX: Double, maxX: Double, minY: Double, maxY: Double) {
@@ -433,6 +459,9 @@ private struct DatasetCharacterPanel: View {
             VStack(alignment: .leading, spacing: 12) {
                 InfoRow(title: "Stroke Count", value: "\(character.strokeCount)")
                 InfoRow(title: "Substroke Count", value: "\(character.substrokeCount)")
+                if let cost = matchCost {
+                    InfoRow(title: "Match Cost", value: String(format: "%.3f", cost))
+                }
             }
             .padding()
             .background(Color(.systemGray6))
