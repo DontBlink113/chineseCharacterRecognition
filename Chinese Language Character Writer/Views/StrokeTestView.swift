@@ -15,6 +15,15 @@ struct StrokeTestView: View {
     @State private var bestMatchCost: Double? = nil
     private let analyzer = CharacterAnalyzer.shared
 
+    @AppStorage("learningCharacters") private var learningCharsInput: String = ""
+    @State private var showLearningInput = false
+    @State private var learningCharsDraft: String = ""
+    @State private var learningInputError: String?
+
+    private var learningCandidateKeys: [String] {
+        extractHanzi(from: learningCharsInput)
+    }
+
 
     //This array contains the completed characters
     private var allCharacters: [CharacterDrawing] {
@@ -183,10 +192,79 @@ struct StrokeTestView: View {
                     }
                 }
 
+                Button(action: {
+                    learningCharsDraft = learningCharsInput
+                    learningInputError = nil
+                    showLearningInput = true
+                }) {
+                    Text("Set Learning Characters")
+                        .font(.headline)
+                        .foregroundColor(.white)
+                        .padding()
+                        .frame(maxWidth: .infinity)
+                        .background(Color.blue)
+                        .cornerRadius(10)
+                }
+                .padding(.horizontal)
+                .sheet(isPresented: $showLearningInput) {
+                    NavigationView {
+                        VStack(spacing: 16) {
+                            Text("Enter characters you are learning")
+                                .font(.headline)
+                            TextEditor(text: $learningCharsDraft)
+                                .frame(minHeight: 120)
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 8)
+                                        .stroke(Color.secondary.opacity(0.3), lineWidth: 1)
+                                )
+                                .padding(.horizontal)
+                            if let err = learningInputError {
+                                Text(err)
+                                    .foregroundColor(.red)
+                                    .font(.footnote)
+                            }
+                            HStack {
+                                Button("Cancel") {
+                                    showLearningInput = false
+                                }
+                                Spacer()
+                                Button("Save") {
+                                    let extracted = extractHanzi(from: learningCharsDraft)
+                                    if extracted.isEmpty {
+                                        learningInputError = "Please enter Chinese characters only."
+                                    } else {
+                                        learningCharsInput = extracted.joined()
+                                        showLearningInput = false
+                                    }
+                                }
+                            }
+                            .padding(.horizontal)
+                            Spacer()
+                        }
+                        .padding()
+                    }
+                }
+                HStack {
+                    Text("Learning set: \(learningCandidateKeys.count) chars")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                    Spacer()
+                    Button("Clear") {
+                        learningCharsInput = ""
+                    }
+                    .font(.caption)
+                }
+                .padding(.horizontal)
+
                 // Find Best Match button
                 Button(action: {
                     bestMatchCost = nil
-                    if let result = analyzer.bestMatch(for: viewModel.currentCharacter) {
+                    let keys = learningCandidateKeys
+                    if keys.isEmpty {
+                        showLearningInput = true
+                        return
+                    }
+                    if let result = analyzer.bestMatch(for: viewModel.currentCharacter, candidateKeys: keys) {
                         datasetCharacter = result.character
                         bestMatchCost = result.cost
                         withAnimation { isPanelVisible = true }
@@ -249,6 +327,22 @@ struct StrokeTestView: View {
             }
         }
     }
+}
+
+private func extractHanzi(from text: String) -> [String] {
+    var seen = Set<String>()
+    var result: [String] = []
+    for scalar in text.unicodeScalars {
+        let v = scalar.value
+        if (0x4E00...0x9FFF).contains(v) || (0x3400...0x4DBF).contains(v) || (0xF900...0xFAFF).contains(v) {
+            let s = String(scalar)
+            if !seen.contains(s) {
+                seen.insert(s)
+                result.append(s)
+            }
+        }
+    }
+    return result
 }
 
 // MARK: - Helper Views
