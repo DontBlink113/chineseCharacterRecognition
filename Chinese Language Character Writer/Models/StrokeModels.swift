@@ -107,7 +107,7 @@ struct Stroke: Identifiable, Equatable {
     /// Detects corners in the stroke and splits it into substrokes
     /// - Parameter distanceThreshold: Minimum distance between points to consider for corner detection (default: 2.6)
     ///   Note: This should only be called after the stroke is complete for performance reasons
-    internal mutating func detectSubstrokes(distanceThreshold: CGFloat = 2.6) {
+    internal mutating func detectSubstrokes(distanceThreshold: CGFloat = 2.6, cornerRatioThreshold: CGFloat = 1.1, curveRatioThreshold: CGFloat = 1.08) {
         // Handle cases with fewer than 3 points
         guard !points.isEmpty else { return }
         
@@ -133,8 +133,8 @@ struct Stroke: Identifiable, Equatable {
             let distance2 = sqrt(d2.x * d2.x + d2.y * d2.y) + sqrt(d3.x * d3.x + d3.y * d3.y)
             
             
-            // If angle is sharp enough, mark as corner
-            if abs(distance1 - distance2) > distanceThreshold {
+            let ratio = distance1 > 0 ? (distance2 / distance1) : 1.0
+            if ratio > cornerRatioThreshold {
                 cornerIndices.append(i)
             }
         }
@@ -142,13 +142,54 @@ struct Stroke: Identifiable, Equatable {
         // Add the last point
         cornerIndices.append(points.count - 1)
         
-        // Create substrokes between corners
+        // Build prefix sums of arc length to enable O(1) segment length queries
+        var prefixLen = Array(repeating: CGFloat(0), count: points.count)
+        for i in 1..<points.count {
+            let a = points[i-1].location
+            let b = points[i].location
+            prefixLen[i] = prefixLen[i-1] + sqrt((b.x - a.x)*(b.x - a.x) + (b.y - a.y)*(b.y - a.y))
+        }
+        
+        // Insert extra pivots in segments that curve gradually (arc/chord > threshold)
+        var extraPivots: [Int] = []
+        if curveRatioThreshold > 1.0 {
+            for seg in 0..<cornerIndices.count-1 {
+                var segStart = cornerIndices[seg]
+                let segEnd = cornerIndices[seg+1]
+                var i = segStart + 1
+                while i <= segEnd {
+                    let run = prefixLen[i] - prefixLen[segStart]
+                    let a = points[segStart].location
+                    let b = points[i].location
+                    let chord = sqrt((b.x - a.x)*(b.x - a.x) + (b.y - a.y)*(b.y - a.y))
+                    if chord > 0, run / chord > curveRatioThreshold {
+                        var mid = (segStart + i) / 2
+                        if mid <= segStart { mid = segStart + 1 }
+                        if mid >= segEnd { mid = segEnd - 1 }
+                        if mid > segStart && mid < segEnd { extraPivots.append(mid) }
+                        segStart = mid
+                        i = segStart + 1
+                    } else {
+                        i += 1
+                    }
+                }
+            }
+        }
+        
+        // Merge and sort indices
+        var all = Set(cornerIndices)
+        for p in extraPivots { all.insert(p) }
+        let indices = all.sorted()
+        
+        // Create substrokes between pivots
         var newSubstrokes: [Substroke] = []
-        for i in 0..<cornerIndices.count-1 {
-            let start = cornerIndices[i]
-            let end = cornerIndices[i+1]
-            let substrokePoints = Array(points[start...end])
-            newSubstrokes.append(Substroke(points: substrokePoints, startIndex: start, endIndex: end))
+        for i in 0..<indices.count-1 {
+            let start = indices[i]
+            let end = indices[i+1]
+            if end >= start {
+                let substrokePoints = Array(points[start...end])
+                newSubstrokes.append(Substroke(points: substrokePoints, startIndex: start, endIndex: end))
+            }
         }
         
         self.substrokes = newSubstrokes
@@ -345,6 +386,10 @@ class DrawingViewModel: ObservableObject {
     @Published private(set) var currentCharacter: CharacterDrawing
     @Published private(set) var characters: [CharacterDrawing] = []
     
+    // Live-tunable substroke segmentation thresholds
+    @Published var cornerRatioThreshold: CGFloat = 1.1
+    @Published var curveRatioThreshold: CGFloat = 1.08
+    
     // Point sampling settings
     private let minimumTimeInterval: TimeInterval = 0.05 // 50ms
     private let minimumDistanceSquared: CGFloat = 36.0 // 6 points squared (for efficiency)
@@ -431,7 +476,11 @@ class DrawingViewModel: ObservableObject {
         if stroke.points.count >= 2 {
             // Create a copy to avoid mutating the stroke while it's being used for drawing
             var strokeCopy = stroke
-            strokeCopy.detectSubstrokes()
+            strokeCopy.detectSubstrokes(
+                distanceThreshold: 2.6,
+                cornerRatioThreshold: cornerRatioThreshold,
+                curveRatioThreshold: curveRatioThreshold
+            )
             stroke = strokeCopy
         }
         
