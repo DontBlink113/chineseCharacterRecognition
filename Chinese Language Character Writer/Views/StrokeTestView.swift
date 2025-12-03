@@ -24,6 +24,13 @@ struct StrokeTestView: View {
         extractHanzi(from: learningCharsInput)
     }
 
+    @State private var generatedSentence: GeneratedSentence? = nil
+    @State private var isGeneratingSentence: Bool = false
+    @State private var generationError: String? = nil
+
+    @State private var lastSentenceCharCount: Int = 0
+    @State private var lastSentenceSubstrokeTotal: Int = 0
+
 
     //This array contains the completed characters
     private var allCharacters: [CharacterDrawing] {
@@ -79,6 +86,53 @@ struct StrokeTestView: View {
             
             // Controls
             VStack(spacing: 16) {
+                HStack(spacing: 12) {
+                    Button(action: {
+                        viewModel.startSentence()
+                        lastSentenceCharCount = 0
+                        lastSentenceSubstrokeTotal = 0
+                    }) {
+                        Text("Start Sentence")
+                            .frame(maxWidth: .infinity)
+                            .padding()
+                            .background(viewModel.isRecordingSentence ? Color.gray : Color.blue)
+                            .foregroundColor(.white)
+                            .cornerRadius(10)
+                    }
+                    .disabled(viewModel.isRecordingSentence)
+
+                    Button(action: {
+                        let result = viewModel.endSentence()
+                        lastSentenceCharCount = result.1.count
+                        lastSentenceSubstrokeTotal = result.0.map { $0.count }.reduce(0, +)
+                    }) {
+                        Text("End Sentence")
+                            .frame(maxWidth: .infinity)
+                            .padding()
+                            .background(viewModel.isRecordingSentence ? Color.orange : Color.gray)
+                            .foregroundColor(.white)
+                            .cornerRadius(10)
+                    }
+                    .disabled(!viewModel.isRecordingSentence)
+                }
+                .padding(.horizontal)
+                if viewModel.isRecordingSentence {
+                    HStack {
+                        Text("Recording sentence: \(viewModel.currentSentence.count) chars")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                        Spacer()
+                    }
+                    .padding(.horizontal)
+                } else if lastSentenceCharCount > 0 {
+                    HStack {
+                        Text("Saved sentence: \(lastSentenceCharCount) chars, \(lastSentenceSubstrokeTotal) substrokes")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                        Spacer()
+                    }
+                    .padding(.horizontal)
+                }
                 // Character mode toggle
                 Button(action: {
                     viewModel.toggleCharacterMode()
@@ -100,7 +154,7 @@ struct StrokeTestView: View {
                     Button(action: {
                         viewModel.completeCurrentCharacter()
                     }) {
-                        Text("Complete Character")
+                        Text(viewModel.isRecordingSentence ? "Save Character" : "Complete Character")
                             .frame(maxWidth: .infinity)
                             .padding()
                             .background(Color.green)
@@ -282,6 +336,67 @@ struct StrokeTestView: View {
                 }
                 .padding(.horizontal)
                 .disabled(viewModel.currentCharacter.allSubstrokes.isEmpty)
+
+                Button(action: {
+                    generationError = nil
+                    generatedSentence = nil
+                    let allowed = learningCandidateKeys
+                    if allowed.isEmpty {
+                        showLearningInput = true
+                        return
+                    }
+                    isGeneratingSentence = true
+                    Task {
+                        defer { isGeneratingSentence = false }
+                        do {
+                            let generator = try OpenAISentenceGenerator()
+                            let result = try await generator.generate(allowed: allowed)
+                            generatedSentence = result
+                        } catch let err as SentenceGenError {
+                            switch err {
+                            case .missingAPIKey:
+                                generationError = "Missing OpenAI API key. Add OPENAI_API_KEY to Info.plist."
+                            case .emptyAllowedSet:
+                                generationError = "Please add learning characters first."
+                            case .validationFailed:
+                                generationError = "The model included characters outside your set. Please try again."
+                            case .invalidResponse:
+                                generationError = "Invalid response from the API."
+                            }
+                        } catch {
+                            generationError = "Failed to generate sentence. Check connection and try again."
+                        }
+                    }
+                }) {
+                    HStack {
+                        if isGeneratingSentence { ProgressView().progressViewStyle(.circular) }
+                        Text("Generate Sentence")
+                            .font(.headline)
+                    }
+                    .foregroundColor(.white)
+                    .padding()
+                    .frame(maxWidth: .infinity)
+                    .background(Color.teal)
+                    .cornerRadius(10)
+                }
+                .padding(.horizontal)
+                .disabled(isGeneratingSentence)
+
+                if let g = generatedSentence {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text(g.chinese)
+                            .font(.title2)
+                        Text(g.english)
+                            .font(.subheadline)
+                            .foregroundColor(.secondary)
+                    }
+                    .padding(.horizontal)
+                } else if let ge = generationError {
+                    Text(ge)
+                        .foregroundColor(.red)
+                        .font(.footnote)
+                        .padding(.horizontal)
+                }
             }
             .padding(.vertical, 8)
             .background(Color(UIColor.systemGroupedBackground))
