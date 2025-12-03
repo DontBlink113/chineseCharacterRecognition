@@ -31,6 +31,13 @@ struct StrokeTestView: View {
     @State private var lastSentenceCharCount: Int = 0
     @State private var lastSentenceSubstrokeTotal: Int = 0
 
+    @State private var isComparing: Bool = false
+    @State private var comparisonEnglish: String = ""
+    @State private var comparisonChineseTarget: String = ""
+    @State private var comparisonError: String? = nil
+    @State private var comparisonInterpreted: String? = nil
+    @State private var isPreparingComparison: Bool = false
+
 
     //This array contains the completed characters
     private var allCharacters: [CharacterDrawing] {
@@ -86,6 +93,58 @@ struct StrokeTestView: View {
             
             // Controls
             VStack(spacing: 16) {
+                // Start Comparison (auto-generate English + Chinese via OpenAI)
+                Button(action: {
+                    comparisonError = nil
+                    comparisonInterpreted = nil
+                    comparisonEnglish = ""
+                    comparisonChineseTarget = ""
+                    let allowed = learningCandidateKeys
+                    if allowed.isEmpty {
+                        showLearningInput = true
+                        return
+                    }
+                    isPreparingComparison = true
+                    Task {
+                        defer { isPreparingComparison = false }
+                        do {
+                            let generator = try OpenAISentenceGenerator()
+                            let result = try await generator.generate(allowed: allowed)
+                            comparisonEnglish = result.english
+                            comparisonChineseTarget = result.chinese
+                            lastSentenceCharCount = 0
+                            lastSentenceSubstrokeTotal = 0
+                            isComparing = true
+                            viewModel.startSentence()
+                        } catch let err as SentenceGenError {
+                            switch err {
+                            case .missingAPIKey:
+                                comparisonError = "Missing OpenAI API key. Add OPENAI_API_KEY to Info.plist."
+                            case .emptyAllowedSet:
+                                comparisonError = "Please set your learning characters first."
+                            case .validationFailed:
+                                comparisonError = "Model produced characters outside your learning set. Try again."
+                            case .invalidResponse:
+                                comparisonError = "Invalid response from the API."
+                            }
+                        } catch {
+                            comparisonError = "Failed to prepare comparison. Check connection and try again."
+                        }
+                    }
+                }) {
+                    HStack {
+                        if isPreparingComparison { ProgressView().progressViewStyle(.circular) }
+                        Text(isComparing ? "Comparison Active" : "Start Comparison")
+                            .font(.headline)
+                    }
+                    .foregroundColor(.white)
+                    .padding()
+                    .frame(maxWidth: .infinity)
+                    .background(isComparing ? Color.blue : Color.indigo)
+                    .cornerRadius(10)
+                }
+                .padding(.horizontal)
+
                 HStack(spacing: 12) {
                     Button(action: {
                         viewModel.startSentence()
@@ -105,6 +164,11 @@ struct StrokeTestView: View {
                         let result = viewModel.endSentence()
                         lastSentenceCharCount = result.1.count
                         lastSentenceSubstrokeTotal = result.0.map { $0.count }.reduce(0, +)
+                        if isComparing {
+                            let interpreted = interpretWritten(from: result.1)
+                            comparisonInterpreted = interpreted
+                            isComparing = false
+                        }
                     }) {
                         Text("End Sentence")
                             .frame(maxWidth: .infinity)
@@ -133,21 +197,29 @@ struct StrokeTestView: View {
                     }
                     .padding(.horizontal)
                 }
-                // Character mode toggle
-                Button(action: {
-                    viewModel.toggleCharacterMode()
-                }) {
-                    HStack {
-                        Image(systemName: viewModel.isInCharacterMode ? "character.cursor.ibeam" : "character")
-                        Text(viewModel.isInCharacterMode ? "Character Mode: ON" : "Character Mode: OFF")
-                    }
-                    .frame(maxWidth: .infinity)
-                    .padding()
-                    .background(viewModel.isInCharacterMode ? Color.blue : Color.gray)
-                    .foregroundColor(.white)
-                    .cornerRadius(10)
+
+                if let err = comparisonError {
+                    Text(err)
+                        .foregroundColor(.red)
+                        .font(.footnote)
+                        .padding(.horizontal)
                 }
-                .padding(.horizontal)
+
+                if isComparing || comparisonInterpreted != nil {
+                    VStack(alignment: .leading, spacing: 6) {
+                        HStack { Text("English Prompt:").bold(); Spacer() }
+                        Text(comparisonEnglish.isEmpty ? "—" : comparisonEnglish)
+                        HStack { Text("Intended Chinese:").bold(); Spacer() }
+                        Text(comparisonChineseTarget.isEmpty ? "—" : comparisonChineseTarget)
+                        HStack { Text("Interpreted Chinese:").bold(); Spacer() }
+                        Text(comparisonInterpreted ?? "(write sentence, then End Sentence)")
+                    }
+                    .padding()
+                    .background(Color(.systemGray6))
+                    .cornerRadius(10)
+                    .padding(.horizontal)
+                }
+                
                 
                 HStack(spacing: 16) {
                     // Complete character button
@@ -190,61 +262,7 @@ struct StrokeTestView: View {
                 }
                 .padding(.horizontal)
                 
-                // Show Specific Character button (styled like "Show Random Character")
-                Button(action: {
-                    inputCharacter = ""
-                    inputError = nil
-                    showCharacterInput = true
-                }) {
-                    Text("Show Specific Character")
-                        .font(.headline)
-                        .foregroundColor(.white)
-                        .padding()
-                        .frame(maxWidth: .infinity)
-                        .background(Color.green)
-                        .cornerRadius(10)
-                }
-                .padding(.horizontal)
-                .sheet(isPresented: $showCharacterInput) {
-                    NavigationView {
-                        VStack(spacing: 16) {
-                            Text("Enter a Chinese character")
-                                .font(.headline)
-                            TextField("e.g. 你", text: $inputCharacter)
-                                .textFieldStyle(RoundedBorderTextFieldStyle())
-                                .padding(.horizontal)
-                            if let error = inputError {
-                                Text(error)
-                                    .foregroundColor(.red)
-                                    .font(.footnote)
-                            }
-                            HStack {
-                                Button("Cancel") {
-                                    inputCharacter = ""
-                                    inputError = nil
-                                    showCharacterInput = false
-                                }
-                                Spacer()
-                                Button("Show") {
-                                    let query = inputCharacter.trimmingCharacters(in: .whitespacesAndNewlines)
-                                    if query.isEmpty {
-                                        inputError = "Please enter a character."
-                                    } else if let result = analyzer.analyze(character: query) {
-                                        datasetCharacter = result
-                                        inputError = nil
-                                        showCharacterInput = false
-                                        withAnimation { isPanelVisible = true }
-                                    } else {
-                                        inputError = "Character not found in dataset."
-                                    }
-                                }
-                            }
-                            .padding(.horizontal)
-                            Spacer()
-                        }
-                        .padding()
-                    }
-                }
+                // Removed: Show Specific Character and sheet
 
                 Button(action: {
                     learningCharsDraft = learningCharsInput
@@ -309,111 +327,13 @@ struct StrokeTestView: View {
                     .font(.caption)
                 }
                 .padding(.horizontal)
-
-                // Find Best Match button
-                Button(action: {
-                    bestMatchCost = nil
-                    let keys = learningCandidateKeys
-                    if keys.isEmpty {
-                        showLearningInput = true
-                        return
-                    }
-                    if let result = analyzer.bestMatch(for: viewModel.currentCharacter, candidateKeys: keys) {
-                        datasetCharacter = result.character
-                        bestMatchCost = result.cost
-                        withAnimation { isPanelVisible = true }
-                    } else {
-                        inputError = "No match found (insufficient data or no candidates)."
-                    }
-                }) {
-                    Text("Find Best Match")
-                        .font(.headline)
-                        .foregroundColor(.white)
-                        .padding()
-                        .frame(maxWidth: .infinity)
-                        .background(Color.purple)
-                        .cornerRadius(10)
-                }
-                .padding(.horizontal)
-                .disabled(viewModel.currentCharacter.allSubstrokes.isEmpty)
-
-                Button(action: {
-                    generationError = nil
-                    generatedSentence = nil
-                    let allowed = learningCandidateKeys
-                    if allowed.isEmpty {
-                        showLearningInput = true
-                        return
-                    }
-                    isGeneratingSentence = true
-                    Task {
-                        defer { isGeneratingSentence = false }
-                        do {
-                            let generator = try OpenAISentenceGenerator()
-                            let result = try await generator.generate(allowed: allowed)
-                            generatedSentence = result
-                        } catch let err as SentenceGenError {
-                            switch err {
-                            case .missingAPIKey:
-                                generationError = "Missing OpenAI API key. Add OPENAI_API_KEY to Info.plist."
-                            case .emptyAllowedSet:
-                                generationError = "Please add learning characters first."
-                            case .validationFailed:
-                                generationError = "The model included characters outside your set. Please try again."
-                            case .invalidResponse:
-                                generationError = "Invalid response from the API."
-                            }
-                        } catch {
-                            generationError = "Failed to generate sentence. Check connection and try again."
-                        }
-                    }
-                }) {
-                    HStack {
-                        if isGeneratingSentence { ProgressView().progressViewStyle(.circular) }
-                        Text("Generate Sentence")
-                            .font(.headline)
-                    }
-                    .foregroundColor(.white)
-                    .padding()
-                    .frame(maxWidth: .infinity)
-                    .background(Color.teal)
-                    .cornerRadius(10)
-                }
-                .padding(.horizontal)
-                .disabled(isGeneratingSentence)
-
-                if let g = generatedSentence {
-                    VStack(alignment: .leading, spacing: 6) {
-                        Text(g.chinese)
-                            .font(.title2)
-                        Text(g.english)
-                            .font(.subheadline)
-                            .foregroundColor(.secondary)
-                    }
-                    .padding(.horizontal)
-                } else if let ge = generationError {
-                    Text(ge)
-                        .foregroundColor(.red)
-                        .font(.footnote)
-                        .padding(.horizontal)
-                }
+                
+                // Removed: Find Best Match, Generate Sentence and results
             }
             .padding(.vertical, 8)
             .background(Color(UIColor.systemGroupedBackground))
             
-            // Add View Data button
-            Button(action: {
-                showingCharacterData.toggle()
-            }) {
-                Text("View Character Data")
-                    .frame(maxWidth: .infinity)
-                    .padding()
-                    .background(Color.blue)
-                    .foregroundColor(.white)
-                    .cornerRadius(10)
-            }
-            .padding(.horizontal)
-            .disabled(viewModel.currentCharacter.strokes.isEmpty && viewModel.characters.isEmpty)
+            // Removed: View Character Data button
         }
         .overlay(alignment: .trailing) {
             if isPanelVisible {
@@ -441,6 +361,19 @@ struct StrokeTestView: View {
                 }
             }
         }
+    }
+
+    private func interpretWritten(from drawings: [CharacterDrawing]) -> String {
+        let keys = learningCandidateKeys
+        var result = ""
+        for d in drawings {
+            if let match = analyzer.bestMatch(for: d, candidateKeys: keys.isEmpty ? nil : keys) {
+                result.append(match.character.character)
+            } else {
+                result.append("□")
+            }
+        }
+        return result
     }
 }
 

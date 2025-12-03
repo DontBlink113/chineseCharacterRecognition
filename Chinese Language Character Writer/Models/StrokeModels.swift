@@ -399,7 +399,7 @@ class DrawingViewModel: ObservableObject {
     private var lastPointTime: TimeInterval = 0
     private var lastPoint: CGPoint?
     
-    @Published var isInCharacterMode: Bool = false {
+    @Published var isInCharacterMode: Bool = true {
         didSet {
             if !isInCharacterMode && !currentCharacter.strokes.isEmpty {
                 // Save the current character when exiting character mode
