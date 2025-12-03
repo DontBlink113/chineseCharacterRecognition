@@ -6,6 +6,22 @@ class CharacterAnalyzer {
     // In-memory storage for character data
     private var characterDatabase: [String: Character] = [:]
     
+    // Tunable scaling factor for written substroke normalized lengths
+    var writtenLengthScale: Double = 0.7
+    // Tunable weight for index-distance penalty when matching substrokes
+    var indexProximityWeight: Double = 0.5
+    // Tunable per-substroke-count mismatch penalty (Option B: no division by size)
+    var substrokeCountPenalty: Double = 0.06
+
+    var lengthWeight: Double = 1.0
+
+    var angleWeight: Double = 1.0
+
+    var positionWeight: Double = 1.0
+
+    var missingWeight: Double = 1.0
+
+    
     // Top 100 common characters to search over by default (provided by user)
     private let commonCharacters: [String] = [
         "的","一","了","不","人","我","在","有","他","这","中","大","来","上","国","个","到","说","们","为","子","和","地","出","道","时","年","得","就","下","生","自","会","去","之","用","也","你","对","多","工","可","里","后","小","心","学","么","能","起","天","其","想","看","下","还","么","请","位","做","当","没","再","前","开","因","同","日","手","发","成","方","经","动","面","起","间","话","很","所","最","新","现","分","明","将","些","如","入","先","长","实","两","主","从"
@@ -148,7 +164,8 @@ class CharacterAnalyzer {
             let ny = (Double(s.center.y) - minY) / h
             let ang = Double(s.angle)
             let len = Double(s.magnitude) / maxMag
-            return (angle: ang, nx: min(1, max(0, nx)), ny: min(1, max(0, ny)), length: min(1, max(0, len)))
+            let scaledLen = writtenLengthScale * len
+            return (angle: ang, nx: min(1, max(0, nx)), ny: min(1, max(0, ny)), length: min(1, max(0, scaledLen)))
         }
     }
     
@@ -173,27 +190,46 @@ class CharacterAnalyzer {
     // Total assignment cost using Hungarian algorithm with optional skips via padding and missing-penalty
     private func assignmentCost(written: [(angle: Double, nx: Double, ny: Double, length: Double)],
                                 dataset: [(angle: Double, nx: Double, ny: Double, length: Double)],
-                                missingPenalty: Double = 0.5,
-                                angleWeight: Double = 1.0,
-                                posWeight: Double = 1.0,
-                                lenWeight: Double = 1.0) -> Double {
+                                missingPenalty: Double = CharacterAnalyzer.shared.missingWeight,
+                                angleWeight: Double = CharacterAnalyzer.shared.angleWeight,
+                                posWeight: Double = CharacterAnalyzer.shared.positionWeight,
+                                lenWeight: Double = CharacterAnalyzer.shared.lengthWeight) -> Double {
         let m = written.count
         let n = dataset.count
         let size = max(m, n)
-        
-        func pairCost(_ a: (Double, Double, Double, Double), _ b: (Double, Double, Double, Double)) -> Double {
-            let angDiff = angularDiff(a.0, b.0) / .pi // normalize to [0,1]
-            let dx = a.1 - b.1, dy = a.2 - b.2
-            let posDiff = sqrt(dx*dx + dy*dy) / sqrt(2.0) // [0,1]
-            let lenDiff = abs(a.3 - b.3) // [0,1]
-            return angleWeight*angDiff + posWeight*posDiff + lenWeight*lenDiff
-        }
         
         // Build square cost matrix with padding
         var cost: [[Double]] = Array(repeating: Array(repeating: missingPenalty, count: size), count: size)
         for i in 0..<m {
             for j in 0..<n {
-                cost[i][j] = pairCost(written[i], dataset[j])
+                let a = written[i]
+                let b = dataset[j]
+                let angDiff = angularDiff(a.0, b.0) / .pi // [0,1]
+                let dx = a.1 - b.1, dy = a.2 - b.2
+                let posDiff = sqrt(dx*dx + dy*dy) / sqrt(2.0) // [0,1]
+                let lenDiff = abs(a.3 - b.3) // [0,1]
+                // Index-distance penalty (0 when i==j, increases with |i-j|, normalized by size)
+                let indexNorm = size > 1 ? Double(abs(i - j)) / Double(size - 1) : 0.0
+                let indexTerm = indexProximityWeight * indexNorm
+                cost[i][j] = angleWeight*angDiff + posWeight*posDiff + lenWeight*lenDiff + indexTerm
+            }
+        }
+        // Length-weighted missing penalties for padded columns (dataset dummy)
+        if n < size {
+            for i in 0..<m {
+                for j in n..<size {
+                    let a = written[i]
+                    cost[i][j] = missingPenalty * a.3 // a.3 is normalized (and scaled) length in [0,1]
+                }
+            }
+        }
+        // Length-weighted missing penalties for padded rows (written dummy)
+        if m < size {
+            for i in m..<size {
+                for j in 0..<n {
+                    let b = dataset[j]
+                    cost[i][j] = missingPenalty * b.3 // b.3 is normalized dataset length in [0,1]
+                }
             }
         }
         
@@ -203,8 +239,11 @@ class CharacterAnalyzer {
         for (i, j) in assignment {
             total += cost[i][j]
         }
-        // Average per matched pair for scale invariance
-        return total / Double(size)
+        // Explicit substroke-count penalty (no division by size)
+        let discrepancy = abs(m - n)
+        let extra = Double(discrepancy) * substrokeCountPenalty
+        // Average per matched pair + explicit discrepancy penalty
+        return total / Double(size) + extra
     }
     
     private func angularDiff(_ a: Double, _ b: Double) -> Double {
