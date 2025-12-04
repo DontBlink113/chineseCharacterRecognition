@@ -37,6 +37,7 @@ struct StrokeTestView: View {
     @State private var comparisonError: String? = nil
     @State private var comparisonInterpreted: String? = nil
     @State private var isPreparingComparison: Bool = false
+    @State private var lastWrittenSentence: [CharacterDrawing] = []
 
 
     //This array contains the completed characters
@@ -73,6 +74,16 @@ struct StrokeTestView: View {
                     ForEach(viewModel.currentCharacter.strokes.flatMap { $0.substrokes }) { substroke in
                         SubstrokeInfoView(substroke: substroke)
                     }
+                }
+
+                // Intended glyph overlays (after sentence end)
+                if let interpreted = comparisonInterpreted, !comparisonChineseTarget.isEmpty, !lastWrittenSentence.isEmpty {
+                    IntendedOverlayView(
+                        written: lastWrittenSentence,
+                        intended: comparisonChineseTarget,
+                        interpreted: interpreted,
+                        analyzer: analyzer
+                    )
                 }
             }
             .gesture(
@@ -164,6 +175,7 @@ struct StrokeTestView: View {
                         let result = viewModel.endSentence()
                         lastSentenceCharCount = result.1.count
                         lastSentenceSubstrokeTotal = result.0.map { $0.count }.reduce(0, +)
+                        lastWrittenSentence = result.1
                         if isComparing {
                             let interpreted = interpretWritten(from: result.1)
                             comparisonInterpreted = interpreted
@@ -399,16 +411,171 @@ private func extractHanzi(from text: String) -> [String] {
     return result
 }
 
-// MARK: - Helper Views
+// MARK: - Intended Overlay Views/Helpers
+
+private struct IntendedOverlayView: View {
+    let written: [CharacterDrawing]
+    let intended: String
+    let interpreted: String
+    let analyzer: CharacterAnalyzer
+
+    private let gap: CGFloat = 8
+    private let extraGap: CGFloat = 10
+
+    var body: some View {
+        let rects = written.map { $0.boundingRect }
+        let alignment = buildAlignment(intended: intended, interpreted: interpreted)
+        let pairsArr = alignment.pairs
+        let insertGroups = alignment.groups
+        let sortedKeys = insertGroups.keys.sorted().filter { !(insertGroups[$0]?.isEmpty ?? true) }
+        return ZStack {
+            ForEach(0..<pairsArr.count, id: \.self) { idx in
+                let (i, j) = pairsArr[idx]
+                if let ds = analyzer.analyze(character: String(Array(intended)[i])), let r = rects[safe: j] {
+                    DatasetGlyphMini(character: ds)
+                        .frame(width: r.width, height: r.height)
+                        .position(x: r.midX, y: r.maxY + gap + r.height/2)
+                }
+            }
+            ForEach(sortedKeys, id: \.self) { between in
+                let items = insertGroups[between] ?? []
+                let base = insertionRect(rects: rects, between: between, gap: gap, extraGap: extraGap)
+                let spacing = base.width * 0.2
+                let totalWidth = CGFloat(items.count) * base.width + CGFloat(max(0, items.count - 1)) * spacing
+                let leftX: CGFloat = {
+                    if between < 0, let first = rects.first { return first.minX - spacing - totalWidth }
+                    if between >= rects.count - 1, let last = rects.last { return last.maxX + spacing }
+                    return base.midX - totalWidth / 2
+                }()
+                let caretX = leftX + totalWidth / 2
+                // caret marker above the group
+                Text("^")
+                    .font(.caption.bold())
+                    .foregroundColor(.red)
+                    .position(x: caretX, y: base.minY - 6)
+                // glyphs in the group
+                ForEach(0..<items.count, id: \.self) { k in
+                    let i = items[k]
+                    if let ds = analyzer.analyze(character: String(Array(intended)[i])) {
+                        let cx = leftX + CGFloat(k) * (base.width + spacing) + base.width / 2
+                        DatasetGlyphMini(character: ds)
+                            .frame(width: base.width, height: base.height)
+                            .position(x: cx, y: base.midY)
+                    }
+                }
+            }
+        }
+        .allowsHitTesting(false)
+    }
+
+    private func buildAlignment(intended: String, interpreted: String) -> (pairs: [(Int, Int)], groups: [Int: [Int]]) {
+        let ops = align(intended: intended, interpreted: interpreted)
+        var pairs: [(Int, Int)] = []
+        var insertGroups: [Int: [Int]] = [:]
+        for op in ops {
+            switch op {
+            case let .pair(i, j):
+                pairs.append((i, j))
+            case let .insert(i, between):
+                insertGroups[between, default: []].append(i)
+            }
+        }
+        return (pairs, insertGroups)
+    }
+
+    private func insertionRect(rects: [CGRect], between: Int, gap: CGFloat, extraGap: CGFloat) -> CGRect {
+        guard let first = rects.first, let last = rects.last else { return .zero }
+        if between < 0 {
+            let w = first.width, h = first.height
+            let top = first.maxY + gap + h + extraGap
+            return CGRect(x: first.minX, y: top, width: w, height: h)
+        }
+        if between >= rects.count - 1 {
+            let w = last.width, h = last.height
+            let top = last.maxY + gap + h + extraGap
+            return CGRect(x: last.minX, y: top, width: w, height: h)
+        }
+        let left = rects[between]
+        let right = rects[between + 1]
+        let w = (left.width + right.width) / 2
+        let h = (left.height + right.height) / 2
+        let xMid = (left.midX + right.midX) / 2
+        let top = max(left.maxY, right.maxY) + gap + h + extraGap
+        return CGRect(x: xMid - w/2, y: top, width: w, height: h)
+    }
+
+    private enum AlignOp { case pair(Int, Int); case insert(Int, between: Int) }
+
+    private func align(intended: String, interpreted: String) -> [AlignOp] {
+        let S = Array(intended)
+        let T = Array(interpreted)
+        let m = S.count, n = T.count
+        var dp = Array(repeating: Array(repeating: 0, count: n+1), count: m+1)
+        for i in 0...m { dp[i][0] = i }
+        for j in 0...n { dp[0][j] = j }
+        for i in 1...m {
+            for j in 1...n {
+                let cost = (S[i-1] == T[j-1]) ? 0 : 1
+                dp[i][j] = min(
+                    dp[i-1][j] + 1,
+                    dp[i][j-1] + 1,
+                    dp[i-1][j-1] + cost
+                )
+            }
+        }
+        var i = m, j = n
+        var ops: [AlignOp] = []
+        while i > 0 || j > 0 {
+            if i > 0 && j > 0 && dp[i][j] == dp[i-1][j-1] + ((S[i-1] == T[j-1]) ? 0 : 1) {
+                ops.append(.pair(i-1, j-1))
+                i -= 1; j -= 1
+            } else if i > 0 && dp[i][j] == dp[i-1][j] + 1 {
+                ops.append(.insert(i-1, between: j-1))
+                i -= 1
+            } else {
+                j -= 1
+            }
+        }
+        return ops.reversed()
+    }
+}
+
+private struct DatasetGlyphMini: View {
+    let character: Character
+    var body: some View {
+        GeometryReader { geo in
+            let w = geo.size.width
+            let h = geo.size.height
+            Path { path in
+                for s in character.substrokes {
+                    let cx = s.centerX * w
+                    let cy = s.centerY * h
+                    let len = s.length * (w + h) / 2
+                    let ang = s.direction
+                    let dx = -cos(ang) * len / 2 // reflect across y-axis
+                    let dy = sin(ang) * len / 2 
+                    path.move(to: CGPoint(x: cx - dx, y: cy - dy))
+                    path.addLine(to: CGPoint(x: cx + dx, y: cy + dy))
+                }
+            }
+            .stroke(Color.red, lineWidth: 2)
+        }
+    }
+}
 
 private struct CharacterView: View {
     let character: CharacterDrawing
-    
     var body: some View {
         ForEach(character.strokes) { stroke in
             StrokeView(stroke: stroke)
                 .stroke(Color.black, lineWidth: 3)
         }
+    }
+}
+
+private extension Array {
+    subscript(safe index: Int) -> Element? {
+        return indices.contains(index) ? self[index] : nil
     }
 }
 

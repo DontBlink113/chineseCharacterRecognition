@@ -193,7 +193,7 @@ class CharacterAnalyzer {
                                  intended: String,
                                  candidateKeys: [String]? = nil,
                                  temperature: Double? = nil,
-                                 inMass: Double = 0.8,
+                                 inMass: Double = 0.5,
                                  decay: Double = 0.7) -> [(character: Character, cost: Double, likelihood: Double, prior: Double, posterior: Double)] {
         let pairs = candidateCosts(for: drawing, candidateKeys: candidateKeys)
         guard !pairs.isEmpty else { return [] }
@@ -260,8 +260,8 @@ class CharacterAnalyzer {
                               intended: String,
                               candidateKeys: [String]? = nil,
                               temperature: Double? = nil,
-                              inMass: Double = 0.8,
-                              decay: Double = 0.7) -> (character: Character, cost: Double, probability: Double)? {
+                              inMass: Double = 0.5,
+                              decay: Double = 0.95) -> (character: Character, cost: Double, probability: Double)? {
         guard let top = probabilitiesWithPrior(for: drawing, atIndex: index, intended: intended, candidateKeys: candidateKeys, temperature: temperature, inMass: inMass, decay: decay).first else { return nil }
         return (top.character, top.cost, top.4)
     }
