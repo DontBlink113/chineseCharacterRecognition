@@ -55,6 +55,7 @@ final class OpenAISentenceGenerator {
             "model": model,
             "response_format": ["type": "json_object"],
             "temperature": 0.6,
+            "max_tokens": 120,
             "messages": messages
         ]
         var req = URLRequest(url: apiURL)
@@ -63,11 +64,28 @@ final class OpenAISentenceGenerator {
         req.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
         req.httpBody = try JSONSerialization.data(withJSONObject: payload)
         let (data, resp) = try await URLSession.shared.data(for: req)
-        guard let http = resp as? HTTPURLResponse, (200..<300).contains(http.statusCode) else { throw SentenceGenError.invalidResponse }
+        if let http = resp as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
+            // Try to decode OpenAI error body for better diagnostics
+            struct OpenAIErrorBody: Decodable { struct Err: Decodable { let message: String? }; let error: Err? }
+            if let err = try? JSONDecoder().decode(OpenAIErrorBody.self, from: data), let msg = err.error?.message {
+                print("OpenAI API error (\(http.statusCode)): \(msg)")
+            } else if let raw = String(data: data, encoding: .utf8) {
+                print("OpenAI API error (\(http.statusCode)): \(raw)")
+            }
+            throw SentenceGenError.invalidResponse
+        }
         struct ChatResponse: Decodable { struct Choice: Decodable { struct Msg: Decodable { let content: String }; let message: Msg }; let choices: [Choice] }
         let chat = try JSONDecoder().decode(ChatResponse.self, from: data)
-        guard let content = chat.choices.first?.message.content.data(using: .utf8) else { throw SentenceGenError.invalidResponse }
-        return try JSONDecoder().decode(GeneratedSentence.self, from: content)
+        guard let rawContent = chat.choices.first?.message.content else { throw SentenceGenError.invalidResponse }
+        // Some models may wrap JSON in code fences; extract the JSON object defensively
+        let jsonString: String = {
+            if let start = rawContent.firstIndex(of: "{"), let end = rawContent.lastIndex(of: "}") , start <= end {
+                return String(rawContent[start...end])
+            }
+            return rawContent
+        }()
+        guard let contentData = jsonString.data(using: .utf8) else { throw SentenceGenError.invalidResponse }
+        return try JSONDecoder().decode(GeneratedSentence.self, from: contentData)
     }
 }
 

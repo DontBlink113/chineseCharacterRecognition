@@ -366,8 +366,14 @@ struct StrokeTestView: View {
     private func interpretWritten(from drawings: [CharacterDrawing]) -> String {
         let keys = learningCandidateKeys
         var result = ""
-        for d in drawings {
-            if let match = analyzer.bestMatch(for: d, candidateKeys: keys.isEmpty ? nil : keys) {
+        for (i, d) in drawings.enumerated() {
+            if !comparisonChineseTarget.isEmpty,
+               let match = analyzer.bestMatchByPosterior(for: d,
+                                                        atIndex: i,
+                                                        intended: comparisonChineseTarget,
+                                                        candidateKeys: keys.isEmpty ? nil : keys) {
+                result.append(match.character.character)
+            } else if let match = analyzer.bestMatchByProbability(for: d, candidateKeys: keys.isEmpty ? nil : keys) {
                 result.append(match.character.character)
             } else {
                 result.append("□")
