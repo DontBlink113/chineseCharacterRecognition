@@ -193,8 +193,8 @@ class CharacterAnalyzer {
                                  intended: String,
                                  candidateKeys: [String]? = nil,
                                  temperature: Double? = nil,
-                                 inMass: Double = 0.5,
-                                 decay: Double = 0.7) -> [(character: Character, cost: Double, likelihood: Double, prior: Double, posterior: Double)] {
+                                 inMass: Double = 0.1,
+                                 decay: Double = 0.9) -> [(character: Character, cost: Double, likelihood: Double, prior: Double, posterior: Double)] {
         let pairs = candidateCosts(for: drawing, candidateKeys: candidateKeys)
         guard !pairs.isEmpty else { return [] }
         let tau = max(1e-6, temperature ?? softmaxTemperature)
@@ -260,10 +260,90 @@ class CharacterAnalyzer {
                               intended: String,
                               candidateKeys: [String]? = nil,
                               temperature: Double? = nil,
-                              inMass: Double = 0.5,
+                              inMass: Double = 0.35,
                               decay: Double = 0.95) -> (character: Character, cost: Double, probability: Double)? {
         guard let top = probabilitiesWithPrior(for: drawing, atIndex: index, intended: intended, candidateKeys: candidateKeys, temperature: temperature, inMass: inMass, decay: decay).first else { return nil }
         return (top.character, top.cost, top.4)
+    }
+    
+    func bestSentenceByGlobalReuse(written: [CharacterDrawing],
+                                   intended: String,
+                                   candidateKeys: [String]? = nil,
+                                   temperature: Double? = nil,
+                                   inMass: Double = 0.35,
+                                   decay: Double = 0.95,
+                                   gamma: Double = 0.8) -> (assigned: [Character], logScore: Double) {
+        let eps = 1e-12
+        let logGamma = log(max(eps, gamma))
+        var cap: [String: Int] = [:]
+        for ch in intended { cap[String(ch), default: 0] += 1 }
+        var keySet: Set<String> = Set(candidateKeys ?? commonCharacters)
+        for ch in intended { keySet.insert(String(ch)) }
+        let keys = Array(keySet)
+
+        var lists: [[(Character, String, Double, Bool)]] = []
+        lists.reserveCapacity(written.count)
+        for (i, d) in written.enumerated() {
+            let probs = probabilitiesWithPrior(for: d, atIndex: i, intended: intended, candidateKeys: keys, temperature: temperature, inMass: inMass, decay: decay)
+            var arr: [(Character, String, Double, Bool)] = []
+            var sawNonGoal = false
+            for item in probs {
+                let key = item.character.character
+                let isGoal = cap[key] != nil
+                if !sawNonGoal {
+                    let lp = log(max(eps, item.4))
+                    arr.append((item.character, key, lp, isGoal))
+                    if !isGoal { sawNonGoal = true }
+                } else {
+                    break
+                }
+            }
+            if arr.isEmpty, let first = probs.first {
+                let key = first.character.character
+                let lp = log(max(eps, first.4))
+                arr.append((first.character, key, lp, cap[key] != nil))
+            }
+            lists.append(arr)
+        }
+
+        var bestScore = -Double.greatestFiniteMagnitude
+        var bestAssign: [Character] = []
+        var usage: [String: Int] = [:]
+        var bestPerPos: [Double] = lists.map { $0.map { $0.2 }.max() ?? log(eps) }
+        func upperBound(from idx: Int) -> Double {
+            var s = 0.0
+            var k = idx
+            while k < bestPerPos.count { s += bestPerPos[k]; k += 1 }
+            return s
+        }
+        var current: [Character] = []
+        func dfs(_ idx: Int, _ score: Double) {
+            if idx == lists.count {
+                if score > bestScore { bestScore = score; bestAssign = current }
+                return
+            }
+            let ub = score + upperBound(from: idx)
+            if ub <= bestScore { return }
+            for opt in lists[idx] {
+                let key = opt.1
+                var add = opt.2
+                if opt.3 {
+                    let u = usage[key] ?? 0
+                    let c = cap[key] ?? 0
+                    if u >= c { add += logGamma }
+                    usage[key] = u + 1
+                }
+                current.append(opt.0)
+                dfs(idx + 1, score + add)
+                current.removeLast()
+                if opt.3 {
+                    let u = (usage[key] ?? 1) - 1
+                    if u <= 0 { usage.removeValue(forKey: key) } else { usage[key] = u }
+                }
+            }
+        }
+        dfs(0, 0.0)
+        return (bestAssign, bestScore)
     }
     
     // Feature extraction for written substrokes (angles in radians, centers bbox-normalized, lengths normalized 0..1 by max magnitude)

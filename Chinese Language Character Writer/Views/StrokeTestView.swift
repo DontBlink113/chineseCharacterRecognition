@@ -377,6 +377,19 @@ struct StrokeTestView: View {
 
     private func interpretWritten(from drawings: [CharacterDrawing]) -> String {
         let keys = learningCandidateKeys
+        if !comparisonChineseTarget.isEmpty {
+            let res = analyzer.bestSentenceByGlobalReuse(
+                written: drawings,
+                intended: comparisonChineseTarget,
+                candidateKeys: keys.isEmpty ? nil : keys,
+                inMass: 0.5,
+                decay: 0.95,
+                gamma: 0.8
+            )
+            if !res.assigned.isEmpty {
+                return res.assigned.map { $0.character }.joined()
+            }
+        }
         var result = ""
         for (i, d) in drawings.enumerated() {
             if !comparisonChineseTarget.isEmpty,
@@ -431,7 +444,9 @@ private struct IntendedOverlayView: View {
         return ZStack {
             ForEach(0..<pairsArr.count, id: \.self) { idx in
                 let (i, j) = pairsArr[idx]
-                if let ds = analyzer.analyze(character: String(Array(intended)[i])), let r = rects[safe: j] {
+                let Si = Array(intended)[i]
+                let Tj = Array(interpreted)[j]
+                if Si != Tj, let ds = analyzer.analyze(character: String(Si)), let r = rects[safe: j] {
                     DatasetGlyphMini(character: ds)
                         .frame(width: r.width, height: r.height)
                         .position(x: r.midX, y: r.maxY + gap + r.height/2)
