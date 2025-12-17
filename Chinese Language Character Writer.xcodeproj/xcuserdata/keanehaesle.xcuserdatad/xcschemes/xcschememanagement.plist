@@ -5,7 +5,10 @@
 	<key>SchemeUserState</key>
 	<dict>
 		<key>Chinese Language Character Writer.xcscheme_^#shared#^_</key>
-		<string></string>
+		<dict>
+			<key>orderHint</key>
+			<integer>0</integer>
+		</dict>
 	</dict>
 </dict>
 </plist>

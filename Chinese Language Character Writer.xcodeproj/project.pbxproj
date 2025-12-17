@@ -36,22 +36,9 @@
 		013935D72EDB73440041C8D7 /* mmah.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = mmah.json; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
-/* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
-		013937A62EE0F3F80041C8D7 /* Exceptions for "Chinese Language Character Writer" folder in "Chinese Language Character Writer" target */ = {
-			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
-			membershipExceptions = (
-				"Chinese-Language-Character-Writer-Info.plist",
-			);
-			target = 013935642ECD999F0041C8D7 /* Chinese Language Character Writer */;
-		};
-/* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
-
 /* Begin PBXFileSystemSynchronizedRootGroup section */
 		013935672ECD999F0041C8D7 /* Chinese Language Character Writer */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
-			exceptions = (
-				013937A62EE0F3F80041C8D7 /* Exceptions for "Chinese Language Character Writer" folder in "Chinese Language Character Writer" target */,
-			);
 			path = "Chinese Language Character Writer";
 			sourceTree = "<group>";
 		};
