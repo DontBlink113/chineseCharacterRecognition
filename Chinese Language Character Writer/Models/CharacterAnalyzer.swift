@@ -21,6 +21,8 @@ class CharacterAnalyzer {
 
     var missingWeight: Double = 1.0
 
+    // Softmax temperature for converting costs to probabilities (lower => sharper)
+    var softmaxTemperature: Double = 0.6
     
     // Top 100 common characters to search over by default (provided by user)
     private let commonCharacters: [String] = [
@@ -139,6 +141,209 @@ class CharacterAnalyzer {
             }
         }
         return best
+    }
+
+    /// Compute costs for all candidates (within stroke-count tolerance) without windowing
+    func candidateCosts(for drawing: CharacterDrawing, candidateKeys: [String]? = nil) -> [(character: Character, cost: Double)] {
+        let keys = candidateKeys ?? commonCharacters
+        let writtenStrokeCount = drawing.strokes.count
+        let writtenSubstrokes = extractWrittenFeatures(from: drawing)
+        guard !writtenSubstrokes.isEmpty else { return [] }
+        let candidates: [Character] = keys.compactMap { key in characterDatabase[key] }
+            .filter { abs($0.strokeCount - writtenStrokeCount) <= 2 }
+        var results: [(Character, Double)] = []
+        results.reserveCapacity(candidates.count)
+        for candidate in candidates {
+            let datasetSubs = extractDatasetFeatures(from: candidate)
+            if datasetSubs.isEmpty { continue }
+            let cost = assignmentCost(written: writtenSubstrokes, dataset: datasetSubs)
+            results.append((candidate, cost))
+        }
+        return results
+    }
+
+    /// Convert costs to probabilities using softmax over negative cost
+    func probabilities(for drawing: CharacterDrawing, candidateKeys: [String]? = nil, temperature: Double? = nil) -> [(character: Character, cost: Double, probability: Double)] {
+        let pairs = candidateCosts(for: drawing, candidateKeys: candidateKeys)
+        guard !pairs.isEmpty else { return [] }
+        let tau = max(1e-6, temperature ?? softmaxTemperature)
+        // Stability: shift by min cost
+        let minCost = pairs.map { $0.cost }.min() ?? 0.0
+        let logits = pairs.map { -( $0.cost - minCost ) / tau }
+        let maxLogit = logits.max() ?? 0.0
+        let exps = logits.map { exp($0 - maxLogit) }
+        let denom = exps.reduce(0, +)
+        let probs = exps.map { $0 / max(denom, 1e-12) }
+        var results: [(Character, Double, Double)] = []
+        results.reserveCapacity(pairs.count)
+        for (idx, pair) in pairs.enumerated() {
+            results.append((pair.character, pair.cost, probs[idx]))
+        }
+        // Sort by probability descending
+        return results.sorted { $0.2 > $1.2 }
+    }
+
+    /// Best match picked by highest softmax probability
+    func bestMatchByProbability(for drawing: CharacterDrawing, candidateKeys: [String]? = nil, temperature: Double? = nil) -> (character: Character, cost: Double, probability: Double)? {
+        return probabilities(for: drawing, candidateKeys: candidateKeys, temperature: temperature).first
+    }
+
+    func probabilitiesWithPrior(for drawing: CharacterDrawing,
+                                 atIndex index: Int,
+                                 intended: String,
+                                 candidateKeys: [String]? = nil,
+                                 temperature: Double? = nil,
+                                 inMass: Double = 0.1,
+                                 decay: Double = 0.9) -> [(character: Character, cost: Double, likelihood: Double, prior: Double, posterior: Double)] {
+        let pairs = candidateCosts(for: drawing, candidateKeys: candidateKeys)
+        guard !pairs.isEmpty else { return [] }
+        let tau = max(1e-6, temperature ?? softmaxTemperature)
+        let minCost = pairs.map { $0.cost }.min() ?? 0.0
+        let logits = pairs.map { -( $0.cost - minCost ) / tau }
+        let maxLogit = logits.max() ?? 0.0
+        let exps = logits.map { exp($0 - maxLogit) }
+        let denom = exps.reduce(0, +)
+        let likelihoods = exps.map { $0 / max(denom, 1e-12) }
+
+        var intendedPositions: [String: [Int]] = [:]
+        for (pos, ch) in intended.enumerated() {
+            let s = String(ch)
+            intendedPositions[s, default: []].append(pos)
+        }
+
+        var inWeights: [Double] = Array(repeating: 0.0, count: pairs.count)
+        var inCount = 0
+        for (i, pair) in pairs.enumerated() {
+            let c = pair.character.character
+            if let posList = intendedPositions[c] {
+                inCount += 1
+                var best = Int.max
+                for p in posList { best = min(best, abs(p - index)) }
+                let w = pow(max(1e-6, decay), Double(best))
+                inWeights[i] = w
+            }
+        }
+
+        let outCount = pairs.count - inCount
+        let sumIn = inWeights.reduce(0, +)
+        var priors: [Double] = Array(repeating: 0.0, count: pairs.count)
+        if inCount > 0 && sumIn > 0 {
+            for i in 0..<pairs.count {
+                if inWeights[i] > 0 {
+                    priors[i] = inMass * (inWeights[i] / sumIn)
+                } else if outCount > 0 {
+                    priors[i] = (1.0 - inMass) * (1.0 / Double(outCount))
+                }
+            }
+        } else {
+            for i in 0..<pairs.count { priors[i] = 1.0 / Double(pairs.count) }
+        }
+
+        var postRaw: [Double] = []
+        postRaw.reserveCapacity(pairs.count)
+        for i in 0..<pairs.count {
+            postRaw.append(max(1e-12, priors[i]) * max(1e-12, likelihoods[i]))
+        }
+        let postDen = postRaw.reduce(0, +)
+        let post = postRaw.map { $0 / max(1e-12, postDen) }
+
+        var results: [(Character, Double, Double, Double, Double)] = []
+        results.reserveCapacity(pairs.count)
+        for i in 0..<pairs.count {
+            results.append((pairs[i].character, pairs[i].cost, likelihoods[i], priors[i], post[i]))
+        }
+        return results.sorted { $0.4 > $1.4 }
+    }
+
+    func bestMatchByPosterior(for drawing: CharacterDrawing,
+                              atIndex index: Int,
+                              intended: String,
+                              candidateKeys: [String]? = nil,
+                              temperature: Double? = nil,
+                              inMass: Double = 0.35,
+                              decay: Double = 0.95) -> (character: Character, cost: Double, probability: Double)? {
+        guard let top = probabilitiesWithPrior(for: drawing, atIndex: index, intended: intended, candidateKeys: candidateKeys, temperature: temperature, inMass: inMass, decay: decay).first else { return nil }
+        return (top.character, top.cost, top.4)
+    }
+    
+    func bestSentenceByGlobalReuse(written: [CharacterDrawing],
+                                   intended: String,
+                                   candidateKeys: [String]? = nil,
+                                   temperature: Double? = nil,
+                                   inMass: Double = 0.35,
+                                   decay: Double = 0.95,
+                                   gamma: Double = 0.8) -> (assigned: [Character], logScore: Double) {
+        let eps = 1e-12
+        let logGamma = log(max(eps, gamma))
+        var cap: [String: Int] = [:]
+        for ch in intended { cap[String(ch), default: 0] += 1 }
+        var keySet: Set<String> = Set(candidateKeys ?? commonCharacters)
+        for ch in intended { keySet.insert(String(ch)) }
+        let keys = Array(keySet)
+
+        var lists: [[(Character, String, Double, Bool)]] = []
+        lists.reserveCapacity(written.count)
+        for (i, d) in written.enumerated() {
+            let probs = probabilitiesWithPrior(for: d, atIndex: i, intended: intended, candidateKeys: keys, temperature: temperature, inMass: inMass, decay: decay)
+            var arr: [(Character, String, Double, Bool)] = []
+            var sawNonGoal = false
+            for item in probs {
+                let key = item.character.character
+                let isGoal = cap[key] != nil
+                if !sawNonGoal {
+                    let lp = log(max(eps, item.4))
+                    arr.append((item.character, key, lp, isGoal))
+                    if !isGoal { sawNonGoal = true }
+                } else {
+                    break
+                }
+            }
+            if arr.isEmpty, let first = probs.first {
+                let key = first.character.character
+                let lp = log(max(eps, first.4))
+                arr.append((first.character, key, lp, cap[key] != nil))
+            }
+            lists.append(arr)
+        }
+
+        var bestScore = -Double.greatestFiniteMagnitude
+        var bestAssign: [Character] = []
+        var usage: [String: Int] = [:]
+        var bestPerPos: [Double] = lists.map { $0.map { $0.2 }.max() ?? log(eps) }
+        func upperBound(from idx: Int) -> Double {
+            var s = 0.0
+            var k = idx
+            while k < bestPerPos.count { s += bestPerPos[k]; k += 1 }
+            return s
+        }
+        var current: [Character] = []
+        func dfs(_ idx: Int, _ score: Double) {
+            if idx == lists.count {
+                if score > bestScore { bestScore = score; bestAssign = current }
+                return
+            }
+            let ub = score + upperBound(from: idx)
+            if ub <= bestScore { return }
+            for opt in lists[idx] {
+                let key = opt.1
+                var add = opt.2
+                if opt.3 {
+                    let u = usage[key] ?? 0
+                    let c = cap[key] ?? 0
+                    if u >= c { add += logGamma }
+                    usage[key] = u + 1
+                }
+                current.append(opt.0)
+                dfs(idx + 1, score + add)
+                current.removeLast()
+                if opt.3 {
+                    let u = (usage[key] ?? 1) - 1
+                    if u <= 0 { usage.removeValue(forKey: key) } else { usage[key] = u }
+                }
+            }
+        }
+        dfs(0, 0.0)
+        return (bestAssign, bestScore)
     }
     
     // Feature extraction for written substrokes (angles in radians, centers bbox-normalized, lengths normalized 0..1 by max magnitude)

@@ -15,6 +15,30 @@ struct StrokeTestView: View {
     @State private var bestMatchCost: Double? = nil
     private let analyzer = CharacterAnalyzer.shared
 
+    @AppStorage("learningCharacters") private var learningCharsInput: String = ""
+    @State private var showLearningInput = false
+    @State private var learningCharsDraft: String = ""
+    @State private var learningInputError: String?
+
+    private var learningCandidateKeys: [String] {
+        extractHanzi(from: learningCharsInput)
+    }
+
+    @State private var generatedSentence: GeneratedSentence? = nil
+    @State private var isGeneratingSentence: Bool = false
+    @State private var generationError: String? = nil
+
+    @State private var lastSentenceCharCount: Int = 0
+    @State private var lastSentenceSubstrokeTotal: Int = 0
+
+    @State private var isComparing: Bool = false
+    @State private var comparisonEnglish: String = ""
+    @State private var comparisonChineseTarget: String = ""
+    @State private var comparisonError: String? = nil
+    @State private var comparisonInterpreted: String? = nil
+    @State private var isPreparingComparison: Bool = false
+    @State private var lastWrittenSentence: [CharacterDrawing] = []
+
 
     //This array contains the completed characters
     private var allCharacters: [CharacterDrawing] {
@@ -51,6 +75,16 @@ struct StrokeTestView: View {
                         SubstrokeInfoView(substroke: substroke)
                     }
                 }
+
+                // Intended glyph overlays (after sentence end)
+                if let interpreted = comparisonInterpreted, !comparisonChineseTarget.isEmpty, !lastWrittenSentence.isEmpty {
+                    IntendedOverlayView(
+                        written: lastWrittenSentence,
+                        intended: comparisonChineseTarget,
+                        interpreted: interpreted,
+                        analyzer: analyzer
+                    )
+                }
             }
             .gesture(
                 DragGesture(minimumDistance: 0)
@@ -70,28 +104,141 @@ struct StrokeTestView: View {
             
             // Controls
             VStack(spacing: 16) {
-                // Character mode toggle
+                // Start Comparison (auto-generate English + Chinese via OpenAI)
                 Button(action: {
-                    viewModel.toggleCharacterMode()
+                    comparisonError = nil
+                    comparisonInterpreted = nil
+                    comparisonEnglish = ""
+                    comparisonChineseTarget = ""
+                    let allowed = learningCandidateKeys
+                    if allowed.isEmpty {
+                        showLearningInput = true
+                        return
+                    }
+                    isPreparingComparison = true
+                    Task {
+                        defer { isPreparingComparison = false }
+                        do {
+                            let generator = try OpenAISentenceGenerator()
+                            let result = try await generator.generate(allowed: allowed)
+                            comparisonEnglish = result.english
+                            comparisonChineseTarget = result.chinese
+                            lastSentenceCharCount = 0
+                            lastSentenceSubstrokeTotal = 0
+                            isComparing = true
+                            viewModel.startSentence()
+                        } catch let err as SentenceGenError {
+                            switch err {
+                            case .missingAPIKey:
+                                comparisonError = "Missing OpenAI API key. Add OPENAI_API_KEY to Info.plist."
+                            case .emptyAllowedSet:
+                                comparisonError = "Please set your learning characters first."
+                            case .validationFailed:
+                                comparisonError = "Model produced characters outside your learning set. Try again."
+                            case .invalidResponse:
+                                comparisonError = "Invalid response from the API."
+                            }
+                        } catch {
+                            comparisonError = "Failed to prepare comparison. Check connection and try again."
+                        }
+                    }
                 }) {
                     HStack {
-                        Image(systemName: viewModel.isInCharacterMode ? "character.cursor.ibeam" : "character")
-                        Text(viewModel.isInCharacterMode ? "Character Mode: ON" : "Character Mode: OFF")
+                        if isPreparingComparison { ProgressView().progressViewStyle(.circular) }
+                        Text(isComparing ? "Comparison Active" : "Start Comparison")
+                            .font(.headline)
                     }
-                    .frame(maxWidth: .infinity)
-                    .padding()
-                    .background(viewModel.isInCharacterMode ? Color.blue : Color.gray)
                     .foregroundColor(.white)
+                    .padding()
+                    .frame(maxWidth: .infinity)
+                    .background(isComparing ? Color.blue : Color.indigo)
                     .cornerRadius(10)
                 }
                 .padding(.horizontal)
+
+                HStack(spacing: 12) {
+                    Button(action: {
+                        viewModel.startSentence()
+                        lastSentenceCharCount = 0
+                        lastSentenceSubstrokeTotal = 0
+                    }) {
+                        Text("Start Sentence")
+                            .frame(maxWidth: .infinity)
+                            .padding()
+                            .background(viewModel.isRecordingSentence ? Color.gray : Color.blue)
+                            .foregroundColor(.white)
+                            .cornerRadius(10)
+                    }
+                    .disabled(viewModel.isRecordingSentence)
+
+                    Button(action: {
+                        let result = viewModel.endSentence()
+                        lastSentenceCharCount = result.1.count
+                        lastSentenceSubstrokeTotal = result.0.map { $0.count }.reduce(0, +)
+                        lastWrittenSentence = result.1
+                        if isComparing {
+                            let interpreted = interpretWritten(from: result.1)
+                            comparisonInterpreted = interpreted
+                            isComparing = false
+                        }
+                    }) {
+                        Text("End Sentence")
+                            .frame(maxWidth: .infinity)
+                            .padding()
+                            .background(viewModel.isRecordingSentence ? Color.orange : Color.gray)
+                            .foregroundColor(.white)
+                            .cornerRadius(10)
+                    }
+                    .disabled(!viewModel.isRecordingSentence)
+                }
+                .padding(.horizontal)
+                if viewModel.isRecordingSentence {
+                    HStack {
+                        Text("Recording sentence: \(viewModel.currentSentence.count) chars")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                        Spacer()
+                    }
+                    .padding(.horizontal)
+                } else if lastSentenceCharCount > 0 {
+                    HStack {
+                        Text("Saved sentence: \(lastSentenceCharCount) chars, \(lastSentenceSubstrokeTotal) substrokes")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                        Spacer()
+                    }
+                    .padding(.horizontal)
+                }
+
+                if let err = comparisonError {
+                    Text(err)
+                        .foregroundColor(.red)
+                        .font(.footnote)
+                        .padding(.horizontal)
+                }
+
+                if isComparing || comparisonInterpreted != nil {
+                    VStack(alignment: .leading, spacing: 6) {
+                        HStack { Text("English Prompt:").bold(); Spacer() }
+                        Text(comparisonEnglish.isEmpty ? "—" : comparisonEnglish)
+                        HStack { Text("Intended Chinese:").bold(); Spacer() }
+                        Text(comparisonChineseTarget.isEmpty ? "—" : comparisonChineseTarget)
+                        HStack { Text("Interpreted Chinese:").bold(); Spacer() }
+                        Text(comparisonInterpreted ?? "(write sentence, then End Sentence)")
+                    }
+                    .padding()
+                    .background(Color(.systemGray6))
+                    .cornerRadius(10)
+                    .padding(.horizontal)
+                }
+                
                 
                 HStack(spacing: 16) {
                     // Complete character button
                     Button(action: {
                         viewModel.completeCurrentCharacter()
                     }) {
-                        Text("Complete Character")
+                        Text(viewModel.isRecordingSentence ? "Save Character" : "Complete Character")
                             .frame(maxWidth: .infinity)
                             .padding()
                             .background(Color.green)
@@ -127,52 +274,51 @@ struct StrokeTestView: View {
                 }
                 .padding(.horizontal)
                 
-                // Show Specific Character button (styled like "Show Random Character")
+                // Removed: Show Specific Character and sheet
+
                 Button(action: {
-                    inputCharacter = ""
-                    inputError = nil
-                    showCharacterInput = true
+                    learningCharsDraft = learningCharsInput
+                    learningInputError = nil
+                    showLearningInput = true
                 }) {
-                    Text("Show Specific Character")
+                    Text("Set Learning Characters")
                         .font(.headline)
                         .foregroundColor(.white)
                         .padding()
                         .frame(maxWidth: .infinity)
-                        .background(Color.green)
+                        .background(Color.blue)
                         .cornerRadius(10)
                 }
                 .padding(.horizontal)
-                .sheet(isPresented: $showCharacterInput) {
+                .sheet(isPresented: $showLearningInput) {
                     NavigationView {
                         VStack(spacing: 16) {
-                            Text("Enter a Chinese character")
+                            Text("Enter characters you are learning")
                                 .font(.headline)
-                            TextField("e.g. 你", text: $inputCharacter)
-                                .textFieldStyle(RoundedBorderTextFieldStyle())
+                            TextEditor(text: $learningCharsDraft)
+                                .frame(minHeight: 120)
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 8)
+                                        .stroke(Color.secondary.opacity(0.3), lineWidth: 1)
+                                )
                                 .padding(.horizontal)
-                            if let error = inputError {
-                                Text(error)
+                            if let err = learningInputError {
+                                Text(err)
                                     .foregroundColor(.red)
                                     .font(.footnote)
                             }
                             HStack {
                                 Button("Cancel") {
-                                    inputCharacter = ""
-                                    inputError = nil
-                                    showCharacterInput = false
+                                    showLearningInput = false
                                 }
                                 Spacer()
-                                Button("Show") {
-                                    let query = inputCharacter.trimmingCharacters(in: .whitespacesAndNewlines)
-                                    if query.isEmpty {
-                                        inputError = "Please enter a character."
-                                    } else if let result = analyzer.analyze(character: query) {
-                                        datasetCharacter = result
-                                        inputError = nil
-                                        showCharacterInput = false
-                                        withAnimation { isPanelVisible = true }
+                                Button("Save") {
+                                    let extracted = extractHanzi(from: learningCharsDraft)
+                                    if extracted.isEmpty {
+                                        learningInputError = "Please enter Chinese characters only."
                                     } else {
-                                        inputError = "Character not found in dataset."
+                                        learningCharsInput = extracted.joined()
+                                        showLearningInput = false
                                     }
                                 }
                             }
@@ -182,45 +328,24 @@ struct StrokeTestView: View {
                         .padding()
                     }
                 }
-
-                // Find Best Match button
-                Button(action: {
-                    bestMatchCost = nil
-                    if let result = analyzer.bestMatch(for: viewModel.currentCharacter) {
-                        datasetCharacter = result.character
-                        bestMatchCost = result.cost
-                        withAnimation { isPanelVisible = true }
-                    } else {
-                        inputError = "No match found (insufficient data or no candidates)."
+                HStack {
+                    Text("Learning set: \(learningCandidateKeys.count) chars")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                    Spacer()
+                    Button("Clear") {
+                        learningCharsInput = ""
                     }
-                }) {
-                    Text("Find Best Match")
-                        .font(.headline)
-                        .foregroundColor(.white)
-                        .padding()
-                        .frame(maxWidth: .infinity)
-                        .background(Color.purple)
-                        .cornerRadius(10)
+                    .font(.caption)
                 }
                 .padding(.horizontal)
-                .disabled(viewModel.currentCharacter.allSubstrokes.isEmpty)
+                
+                // Removed: Find Best Match, Generate Sentence and results
             }
             .padding(.vertical, 8)
             .background(Color(UIColor.systemGroupedBackground))
             
-            // Add View Data button
-            Button(action: {
-                showingCharacterData.toggle()
-            }) {
-                Text("View Character Data")
-                    .frame(maxWidth: .infinity)
-                    .padding()
-                    .background(Color.blue)
-                    .foregroundColor(.white)
-                    .cornerRadius(10)
-            }
-            .padding(.horizontal)
-            .disabled(viewModel.currentCharacter.strokes.isEmpty && viewModel.characters.isEmpty)
+            // Removed: View Character Data button
         }
         .overlay(alignment: .trailing) {
             if isPanelVisible {
@@ -249,18 +374,223 @@ struct StrokeTestView: View {
             }
         }
     }
+
+    private func interpretWritten(from drawings: [CharacterDrawing]) -> String {
+        let keys = learningCandidateKeys
+        if !comparisonChineseTarget.isEmpty {
+            let res = analyzer.bestSentenceByGlobalReuse(
+                written: drawings,
+                intended: comparisonChineseTarget,
+                candidateKeys: keys.isEmpty ? nil : keys,
+                inMass: 0.5,
+                decay: 0.95,
+                gamma: 0.8
+            )
+            if !res.assigned.isEmpty {
+                return res.assigned.map { $0.character }.joined()
+            }
+        }
+        var result = ""
+        for (i, d) in drawings.enumerated() {
+            if !comparisonChineseTarget.isEmpty,
+               let match = analyzer.bestMatchByPosterior(for: d,
+                                                        atIndex: i,
+                                                        intended: comparisonChineseTarget,
+                                                        candidateKeys: keys.isEmpty ? nil : keys) {
+                result.append(match.character.character)
+            } else if let match = analyzer.bestMatchByProbability(for: d, candidateKeys: keys.isEmpty ? nil : keys) {
+                result.append(match.character.character)
+            } else {
+                result.append("□")
+            }
+        }
+        return result
+    }
 }
 
-// MARK: - Helper Views
+private func extractHanzi(from text: String) -> [String] {
+    var seen = Set<String>()
+    var result: [String] = []
+    for scalar in text.unicodeScalars {
+        let v = scalar.value
+        if (0x4E00...0x9FFF).contains(v) || (0x3400...0x4DBF).contains(v) || (0xF900...0xFAFF).contains(v) {
+            let s = String(scalar)
+            if !seen.contains(s) {
+                seen.insert(s)
+                result.append(s)
+            }
+        }
+    }
+    return result
+}
+
+// MARK: - Intended Overlay Views/Helpers
+
+private struct IntendedOverlayView: View {
+    let written: [CharacterDrawing]
+    let intended: String
+    let interpreted: String
+    let analyzer: CharacterAnalyzer
+
+    private let gap: CGFloat = 8
+    private let extraGap: CGFloat = 10
+
+    var body: some View {
+        let rects = written.map { $0.boundingRect }
+        let alignment = buildAlignment(intended: intended, interpreted: interpreted)
+        let pairsArr = alignment.pairs
+        let insertGroups = alignment.groups
+        let sortedKeys = insertGroups.keys.sorted().filter { !(insertGroups[$0]?.isEmpty ?? true) }
+        return ZStack {
+            ForEach(0..<pairsArr.count, id: \.self) { idx in
+                let (i, j) = pairsArr[idx]
+                let Si = Array(intended)[i]
+                let Tj = Array(interpreted)[j]
+                if Si != Tj, let ds = analyzer.analyze(character: String(Si)), let r = rects[safe: j] {
+                    DatasetGlyphMini(character: ds)
+                        .frame(width: r.width, height: r.height)
+                        .position(x: r.midX, y: r.maxY + gap + r.height/2)
+                }
+            }
+            ForEach(sortedKeys, id: \.self) { between in
+                let items = insertGroups[between] ?? []
+                let base = insertionRect(rects: rects, between: between, gap: gap, extraGap: extraGap)
+                let spacing = base.width * 0.2
+                let totalWidth = CGFloat(items.count) * base.width + CGFloat(max(0, items.count - 1)) * spacing
+                let leftX: CGFloat = {
+                    if between < 0, let first = rects.first { return first.minX - spacing - totalWidth }
+                    if between >= rects.count - 1, let last = rects.last { return last.maxX + spacing }
+                    return base.midX - totalWidth / 2
+                }()
+                let caretX = leftX + totalWidth / 2
+                // caret marker above the group
+                Text("^")
+                    .font(.caption.bold())
+                    .foregroundColor(.red)
+                    .position(x: caretX, y: base.minY - 6)
+                // glyphs in the group
+                ForEach(0..<items.count, id: \.self) { k in
+                    let i = items[k]
+                    if let ds = analyzer.analyze(character: String(Array(intended)[i])) {
+                        let cx = leftX + CGFloat(k) * (base.width + spacing) + base.width / 2
+                        DatasetGlyphMini(character: ds)
+                            .frame(width: base.width, height: base.height)
+                            .position(x: cx, y: base.midY)
+                    }
+                }
+            }
+        }
+        .allowsHitTesting(false)
+    }
+
+    private func buildAlignment(intended: String, interpreted: String) -> (pairs: [(Int, Int)], groups: [Int: [Int]]) {
+        let ops = align(intended: intended, interpreted: interpreted)
+        var pairs: [(Int, Int)] = []
+        var insertGroups: [Int: [Int]] = [:]
+        for op in ops {
+            switch op {
+            case let .pair(i, j):
+                pairs.append((i, j))
+            case let .insert(i, between):
+                insertGroups[between, default: []].append(i)
+            }
+        }
+        return (pairs, insertGroups)
+    }
+
+    private func insertionRect(rects: [CGRect], between: Int, gap: CGFloat, extraGap: CGFloat) -> CGRect {
+        guard let first = rects.first, let last = rects.last else { return .zero }
+        if between < 0 {
+            let w = first.width, h = first.height
+            let top = first.maxY + gap + h + extraGap
+            return CGRect(x: first.minX, y: top, width: w, height: h)
+        }
+        if between >= rects.count - 1 {
+            let w = last.width, h = last.height
+            let top = last.maxY + gap + h + extraGap
+            return CGRect(x: last.minX, y: top, width: w, height: h)
+        }
+        let left = rects[between]
+        let right = rects[between + 1]
+        let w = (left.width + right.width) / 2
+        let h = (left.height + right.height) / 2
+        let xMid = (left.midX + right.midX) / 2
+        let top = max(left.maxY, right.maxY) + gap + h + extraGap
+        return CGRect(x: xMid - w/2, y: top, width: w, height: h)
+    }
+
+    private enum AlignOp { case pair(Int, Int); case insert(Int, between: Int) }
+
+    private func align(intended: String, interpreted: String) -> [AlignOp] {
+        let S = Array(intended)
+        let T = Array(interpreted)
+        let m = S.count, n = T.count
+        var dp = Array(repeating: Array(repeating: 0, count: n+1), count: m+1)
+        for i in 0...m { dp[i][0] = i }
+        for j in 0...n { dp[0][j] = j }
+        for i in 1...m {
+            for j in 1...n {
+                let cost = (S[i-1] == T[j-1]) ? 0 : 1
+                dp[i][j] = min(
+                    dp[i-1][j] + 1,
+                    dp[i][j-1] + 1,
+                    dp[i-1][j-1] + cost
+                )
+            }
+        }
+        var i = m, j = n
+        var ops: [AlignOp] = []
+        while i > 0 || j > 0 {
+            if i > 0 && j > 0 && dp[i][j] == dp[i-1][j-1] + ((S[i-1] == T[j-1]) ? 0 : 1) {
+                ops.append(.pair(i-1, j-1))
+                i -= 1; j -= 1
+            } else if i > 0 && dp[i][j] == dp[i-1][j] + 1 {
+                ops.append(.insert(i-1, between: j-1))
+                i -= 1
+            } else {
+                j -= 1
+            }
+        }
+        return ops.reversed()
+    }
+}
+
+private struct DatasetGlyphMini: View {
+    let character: Character
+    var body: some View {
+        GeometryReader { geo in
+            let w = geo.size.width
+            let h = geo.size.height
+            Path { path in
+                for s in character.substrokes {
+                    let cx = s.centerX * w
+                    let cy = s.centerY * h
+                    let len = s.length * (w + h) / 2
+                    let ang = s.direction
+                    let dx = -cos(ang) * len / 2 // reflect across y-axis
+                    let dy = sin(ang) * len / 2 
+                    path.move(to: CGPoint(x: cx - dx, y: cy - dy))
+                    path.addLine(to: CGPoint(x: cx + dx, y: cy + dy))
+                }
+            }
+            .stroke(Color.red, lineWidth: 2)
+        }
+    }
+}
 
 private struct CharacterView: View {
     let character: CharacterDrawing
-    
     var body: some View {
         ForEach(character.strokes) { stroke in
             StrokeView(stroke: stroke)
                 .stroke(Color.black, lineWidth: 3)
         }
+    }
+}
+
+private extension Array {
+    subscript(safe index: Int) -> Element? {
+        return indices.contains(index) ? self[index] : nil
     }
 }
 
