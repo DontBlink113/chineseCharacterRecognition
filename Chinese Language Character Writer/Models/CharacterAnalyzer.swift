@@ -6,11 +6,13 @@ class CharacterAnalyzer {
     // In-memory storage for character data
     private var characterDatabase: [String: Character] = [:]
     
-    // Tunable scaling factor for written substroke normalized lengths
+    // Scaling factor for written substroke normalized lengths
     var writtenLengthScale: Double = 0.7
+
     // Tunable weight for index-distance penalty when matching substrokes
     var indexProximityWeight: Double = 0.5
-    // Tunable per-substroke-count mismatch penalty (Option B: no division by size)
+
+    // Tunable per-substroke-count mismatch penalty 
     var substrokeCountPenalty: Double = 0.06
 
     var lengthWeight: Double = 1.0
@@ -19,7 +21,8 @@ class CharacterAnalyzer {
 
     var positionWeight: Double = 1.0
 
-    var missingWeight: Double = 1.0
+    // Weight for matching characters with discrepancies in substrokes
+    var missingWeight: Double = 1.0 
 
     // Softmax temperature for converting costs to probabilities (lower => sharper)
     var softmaxTemperature: Double = 0.6
@@ -79,9 +82,8 @@ class CharacterAnalyzer {
             print("Error loading or processing mmah.json: \(error)")
         }
     }
-    
+    //Given a character string, returns the corresponding Character model if available.
     func analyze(character: String) -> Character? {
-        // Simple lookup - in a real app, this might include more complex analysis
         return characterDatabase[character]
     }
     
@@ -94,27 +96,16 @@ class CharacterAnalyzer {
         return characterDatabase.values.filter { $0.strokeCount == strokeCount }
     }
     
-    func getRandomCharacter() -> Character? {
-        return characterDatabase.values.randomElement()
-    }
-    
-    // Get a random character
-    func randomCharacter() -> Character? {
-        return characterDatabase.values.randomElement()
-    }
-    
     // Get all characters
     var allCharacters: [Character] {
         return Array(characterDatabase.values)
     }
     
-    // MARK: - Matching Logic
-    
-    /// Find the best matching dataset character to a written drawing by comparing substroke angles, positions, and lengths.
-    /// - Parameters:
-    ///   - drawing: The user's written character drawing.
-    ///   - candidateKeys: Optional list of Hanzi to restrict the search; defaults to top 100 common characters.
-    /// - Returns: Tuple of best matching dataset Character and its total cost (lower is better).
+    // Find the best matching dataset character to a written drawing by comparing substroke angles, positions, and lengths.
+    // - Parameters:
+    //   - drawing: The user's written character drawing.
+    //   - candidateKeys: Optional list of Hanzi to restrict the search; defaults to top 100 common characters.
+    // - Returns: Tuple of best matching dataset Character and its total cost (lower is better).
     func bestMatch(for drawing: CharacterDrawing, candidateKeys: [String]? = nil) -> (character: Character, cost: Double)? {
         // Build candidate list
         let keys = candidateKeys ?? commonCharacters
@@ -133,7 +124,7 @@ class CharacterAnalyzer {
         for candidate in candidates {
             let datasetSubs = extractDatasetFeatures(from: candidate)
             if datasetSubs.isEmpty { continue }
-            let cost = assignmentCost(written: writtenSubstrokes, dataset: datasetSubs)
+            let cost = assignmentCost(written: writtenSubstrokes, dataset: datasetSubs) //returns the character with the lowest cost
             if let current = best {
                 if cost < current.1 { best = (candidate, cost) }
             } else {
@@ -143,7 +134,7 @@ class CharacterAnalyzer {
         return best
     }
 
-    /// Compute costs for all candidates (within stroke-count tolerance) without windowing
+    /// Compute costs for all candidate characters against one written character 
     func candidateCosts(for drawing: CharacterDrawing, candidateKeys: [String]? = nil) -> [(character: Character, cost: Double)] {
         let keys = candidateKeys ?? commonCharacters
         let writtenStrokeCount = drawing.strokes.count
@@ -188,6 +179,11 @@ class CharacterAnalyzer {
         return probabilities(for: drawing, candidateKeys: candidateKeys, temperature: temperature).first
     }
 
+
+    /*
+    returns several posterior probabilities (one for each of the candidates for each of the candidate characters),
+    incorporating prior probabilities based on character usage and intended string.
+    */
     func probabilitiesWithPrior(for drawing: CharacterDrawing,
                                  atIndex index: Int,
                                  intended: String,
@@ -266,6 +262,13 @@ class CharacterAnalyzer {
         return (top.character, top.cost, top.4)
     }
     
+
+    /*
+    This function matches written characters in a sentence including dependencies between character assignments
+
+    gamma - penalty for exceeding character occurance limits
+    decay - controls the change in prior based on the index of the character (favors characters near index i)
+    */
     func bestSentenceByGlobalReuse(written: [CharacterDrawing],
                                    intended: String,
                                    candidateKeys: [String]? = nil,
@@ -273,6 +276,7 @@ class CharacterAnalyzer {
                                    inMass: Double = 0.35,
                                    decay: Double = 0.95,
                                    gamma: Double = 0.8) -> (assigned: [Character], logScore: Double) {
+        
         let eps = 1e-12
         let logGamma = log(max(eps, gamma))
         var cap: [String: Int] = [:]
@@ -287,6 +291,8 @@ class CharacterAnalyzer {
             let probs = probabilitiesWithPrior(for: d, atIndex: i, intended: intended, candidateKeys: keys, temperature: temperature, inMass: inMass, decay: decay)
             var arr: [(Character, String, Double, Bool)] = []
             var sawNonGoal = false
+            
+            //Search until find a character not in the intended sentence
             for item in probs {
                 let key = item.character.character
                 let isGoal = cap[key] != nil
@@ -317,6 +323,8 @@ class CharacterAnalyzer {
             return s
         }
         var current: [Character] = []
+        
+        //Find best assignment of characters to written characters based on priors and character usage constraints
         func dfs(_ idx: Int, _ score: Double) {
             if idx == lists.count {
                 if score > bestScore { bestScore = score; bestAssign = current }

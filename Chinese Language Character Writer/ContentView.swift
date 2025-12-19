@@ -45,17 +45,7 @@ struct ContentView: View {
                         }
                         .disabled(canvasView.drawing.strokes.isEmpty)
                         .opacity(canvasView.drawing.strokes.isEmpty ? 0.5 : 1.0)
-                        
-                        // Random Character button
-                        Button(action: showRandom) {
-                            Text("Show Random Character")
-                                .font(.headline)
-                                .foregroundColor(.white)
-                                .padding()
-                                .frame(maxWidth: .infinity)
-                                .background(Color.green)
-                                .cornerRadius(10)
-                        }
+                    
                     }
                     .padding(.horizontal)
                     .padding(.bottom)
@@ -107,12 +97,6 @@ struct ContentView: View {
         }
     }
     
-    private func showRandom() {
-        randomCharacter = analyzer.getRandomCharacter()
-        withAnimation {
-            showRandomCharacter = true
-        }
-    }
     
     private func clearCanvas() {
         canvasView.drawing = PKDrawing()
