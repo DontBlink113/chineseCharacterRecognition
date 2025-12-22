@@ -16,6 +16,7 @@ struct Chinese_Language_Character_WriterApp: App {
             }
             .environmentObject(LearningSetsStore())
             .navigationViewStyle(.stack) // This ensures a standard navigation stack on all devices
+            .preferredColorScheme(.light)
         }
     }
 }

@@ -1,0 +1,51 @@
+Color Palette Overview
+Blue Family (Primary Brand)
+
+Blue 900 - Deepest blue for high emphasis
+Blue 700 - Dark blue for primary actions
+Blue 600 - Standard blue for interactive elements
+Blue 500 - Light blue for hover/active states
+Blue 300 - Subtle blue for backgrounds/dividers
+
+Sand Family (Warm Neutrals)
+
+Sand 700 - Dark warm tone for text/emphasis
+Sand 500 - Medium warm tone for secondary text
+Sand 300 - Light warm tone for borders/dividers
+Sand 200 - Very light for card backgrounds
+Sand 100 - Lightest for page backgrounds
+
+Orange (Accent)
+
+Orange 200 - Warm accent for highlights/notifications
+
+Neutral Family (Cool Grays)
+
+Neutral 900 - Primary text color (nearly black)
+Neutral 700 - Secondary text color
+Neutral 400 - Tertiary text/disabled states
+
+
+```swift
+import SwiftUI
+
+enum AppColor {
+    static let blue900 = Color("Blue 900")
+    static let blue700 = Color("Blue 700")
+    static let blue600 = Color("Blue 600")
+    static let blue500 = Color("Blue 500")
+    static let blue300 = Color("Blue 300")
+
+    static let sand700 = Color("Sand 700")
+    static let sand500 = Color("Sand 500")
+    static let sand300 = Color("Sand 300")
+    static let sand200 = Color("Sand 200")
+    static let sand100 = Color("Sand 100")
+
+    static let orange200    = Color("Orange 200")
+
+    static let neutral900 = Color("Neutral 900")
+    static let neutral700 = Color("Neutral 700")
+    static let neutral400 = Color("Neutral 400")
+}
+```

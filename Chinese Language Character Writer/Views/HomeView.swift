@@ -2,66 +2,81 @@ import SwiftUI
 
 struct HomeView: View {
     var body: some View {
-        ZStack {
-            LinearGradient(gradient: Gradient(colors: [Color.blue.opacity(0.12), Color.blue.opacity(0.04)]), startPoint: .topLeading, endPoint: .bottomTrailing)
-                .ignoresSafeArea()
+        GeometryReader { geometry in
+            ZStack {
+                LinearGradient(
+                    gradient: Gradient(stops: [
+                        .init(color: Color("Blue 900"), location: 0.0),
+                        .init(color: Color("Blue 300"), location: 0.35),
+                        .init(color: Color("Sand 100"), location: 1.0)
+                    ]),
+                    startPoint: .top,
+                    endPoint: .bottom
+                )
+                    .ignoresSafeArea()
 
-            VStack(spacing: 24) {
-                Spacer(minLength: 40)
-
-                Text("Chinese Sentence Writing Practice")
-                    .font(.largeTitle).bold()
-                    .foregroundColor(.blue)
-                    .multilineTextAlignment(.center)
+                VStack(spacing: 20) {
+                    // Top bar with Set Characters and Profile buttons
+                    HStack {
+                        NavigationLink(destination: CharacterSetsView()) {
+                            Text("Set Characters")
+                                .font(.subheadline)
+                                .foregroundColor(Color("Blue 900"))
+                                .padding(.horizontal, 16)
+                                .padding(.vertical, 10)
+                                .background(Color("Sand 100"))
+                                .cornerRadius(8)
+                        }
+                        
+                        Spacer()
+                        
+                        Button(action: {
+                            // Profile action - not implemented yet
+                        }) {
+                            Image(systemName: "person.circle.fill")
+                                .font(.title2)
+                                .foregroundColor(Color("Sand 100"))
+                        }
+                    }
                     .padding(.horizontal)
+                    .padding(.top, 10)
 
-                Text("Start the automatic Chinese sentence writing autograder to practice writing sentences and characters.")
-                    .font(.subheadline)
-                    .foregroundColor(.secondary)
-                    .multilineTextAlignment(.center)
-                    .padding(.horizontal)
+                    Spacer()
 
-                NavigationLink(destination: SentencePracticeView()) {
-                    Text("Start Autograder")
-                        .font(.headline)
-                        .foregroundColor(.white)
-                        .padding()
-                        .frame(maxWidth: 200)
-                        .background(Color.blue)
-                        .cornerRadius(12)
-                        .shadow(color: Color.blue.opacity(0.25), radius: 8, x: 0, y: 4)
+                    Text("Ocean: Chinese Character Writing")
+                        .font(.system(size: 60)).bold()
+                        .foregroundColor(Color("Blue 900"))
+
+                    HStack(spacing: 20) {
+                        NavigationLink(destination: SentencePracticeView()) {
+                            Text("Sentence Practice")
+                                .font(.title3)
+                                .foregroundColor(Color("Sand 100"))
+                                .padding(.horizontal, 20)
+                                .padding(.vertical, 16)
+                                .frame(maxWidth: 220)
+                                .background(Color("Blue 700"))
+                                .cornerRadius(12)
+                                .shadow(color: Color("Blue 700").opacity(0.25), radius: 8, x: 0, y: 4)
+                        }
+
+                        NavigationLink(destination: FlashcardPracticeView()) {
+                            Text("Flashcards")
+                                .font(.title3)
+                                .foregroundColor(Color("Sand 100"))
+                                .padding(.horizontal, 20)
+                                .padding(.vertical, 16)
+                                .frame(maxWidth: 220)
+                                .background(Color("Blue 700"))
+                                .cornerRadius(12)
+                                .shadow(color: Color("Blue 700").opacity(0.25), radius: 8, x: 0, y: 4)
+                        }
+                    }
+                    
+                    Spacer()
                 }
-                .padding(.horizontal)
-
-                NavigationLink(destination: CharacterSetsView()) {
-                    Text("Create Character Sets")
-                        .font(.headline)
-                        .foregroundColor(.white)
-                        .padding()
-                        .frame(maxWidth: 200)
-                        .background(Color.blue)
-                        .cornerRadius(12)
-                        .shadow(color: Color.blue.opacity(0.25), radius: 8, x: 0, y: 4)
-                }
-                .padding(.horizontal)
-
-                NavigationLink(destination: FlashcardPracticeView()) {
-                    Text("Flashcards")
-                        .font(.headline)
-                        .foregroundColor(.white)
-                        .padding()
-                        .frame(maxWidth: 200)
-                        .background(Color.blue)
-                        .cornerRadius(12)
-                        .shadow(color: Color.blue.opacity(0.25), radius: 8, x: 0, y: 4)
-                }
-                .padding(.horizontal)
-
-                Spacer()
             }
         }
-        .navigationTitle("Home")
-        .navigationBarTitleDisplayMode(.inline)
     }
 }
 
