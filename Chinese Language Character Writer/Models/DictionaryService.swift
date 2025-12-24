@@ -18,8 +18,13 @@ final class DictionaryService {
         // Attempt to load the CSV from bundle
         // Ensure the file is added to the app target resources
         let name = "Chinese Language Dictionary - All Characters (Frequency)"
+        print("DictionaryService: Looking for CSV...")
         if let url = Bundle.main.url(forResource: name, withExtension: "csv") {
+            print("DictionaryService: Found at \(url)")
             loadCSV(from: url)
+        } else {
+            print("DictionaryService: ❌ CSV FILE NOT FOUND IN BUNDLE!")
+            print("DictionaryService: Make sure the CSV is added to the app target")
         }
     }
 
@@ -35,14 +40,20 @@ final class DictionaryService {
         }
         for line in lines {
             let cols = parseCSVRow(line)
-            if cols.isEmpty { continue }
-            // Heuristic: first column is hanzi, last non-empty column is definition
-            let hanzi = extractFirstHanzi(from: cols.first ?? "")
-            if hanzi.isEmpty { continue }
-            let def = cols.last(where: { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }) ?? ""
-            if def.isEmpty { continue }
-            if dict[hanzi] == nil { dict[hanzi] = def } // keep first
+            if cols.count < 4 { continue }
+            // CSV format: hanzi, pinyin, tone, definition
+            let hanzi = cols[0].trimmingCharacters(in: .whitespacesAndNewlines)
+            let def = cols[3].trimmingCharacters(in: .whitespacesAndNewlines)
+            if hanzi.isEmpty || def.isEmpty { continue }
+            if dict[hanzi] == nil { 
+                dict[hanzi] = def
+                // Debug first few entries
+                if dict.count <= 5 {
+                    print("Loaded: '\(hanzi)' -> '\(def)'")
+                }
+            }
         }
+        print("DictionaryService: Total loaded = \(dict.count) definitions")
     }
 
     private func extractFirstHanzi(from text: String) -> String {

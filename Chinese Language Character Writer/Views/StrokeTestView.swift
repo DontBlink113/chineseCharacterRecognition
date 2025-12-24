@@ -563,19 +563,57 @@ private extension Array {
     }
 }
 
-//Draw stroke based on lines between points.
+//Draw stroke based on smooth curves between points.
 private struct StrokeView: Shape {
     let stroke: Stroke
     
     func path(in rect: CGRect) -> Path {
         var path = Path()
-        guard let firstPoint = stroke.points.first else { return path }
+        let points = stroke.displayPoints.map { $0.location }
+        guard points.count > 0 else { return path }
         
-        path.move(to: firstPoint.location)
-        
-        for point in stroke.points.dropFirst() {
-            path.addLine(to: point.location)
+        if points.count == 1 {
+            // Single point - draw a small circle
+            path.addEllipse(in: CGRect(x: points[0].x - 2, y: points[0].y - 2, width: 4, height: 4))
+            return path
         }
+        
+        if points.count == 2 {
+            // Two points - draw a line
+            path.move(to: points[0])
+            path.addLine(to: points[1])
+            return path
+        }
+        
+        // Three or more points - use smooth curves
+        path.move(to: points[0])
+        
+        // Use quadratic curves for smoothing
+        for i in 1..<points.count {
+            let current = points[i]
+            let previous = points[i - 1]
+            
+            // Calculate midpoint for smooth curve
+            let midPoint = CGPoint(
+                x: (previous.x + current.x) / 2,
+                y: (previous.y + current.y) / 2
+            )
+            
+            if i == 1 {
+                // First segment - curve from start to midpoint
+                path.addQuadCurve(to: midPoint, control: previous)
+            } else {
+                // Subsequent segments - curve to midpoint using previous point as control
+                path.addQuadCurve(to: midPoint, control: previous)
+            }
+        }
+        
+        // Final segment to last point
+        if let last = points.last, points.count > 1 {
+            let secondLast = points[points.count - 2]
+            path.addQuadCurve(to: last, control: secondLast)
+        }
+        
         return path
     }
 }

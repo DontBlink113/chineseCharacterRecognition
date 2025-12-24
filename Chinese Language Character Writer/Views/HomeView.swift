@@ -4,30 +4,12 @@ struct HomeView: View {
     var body: some View {
         GeometryReader { geometry in
             ZStack {
-                LinearGradient(
-                    gradient: Gradient(stops: [
-                        .init(color: Color("Blue 900"), location: 0.0),
-                        .init(color: Color("Blue 300"), location: 0.35),
-                        .init(color: Color("Sand 100"), location: 1.0)
-                    ]),
-                    startPoint: .top,
-                    endPoint: .bottom
-                )
+                Color(red: 0.68, green: 0.85, blue: 0.9)
                     .ignoresSafeArea()
 
                 VStack(spacing: 20) {
-                    // Top bar with Set Characters and Profile buttons
+                    // Top bar with Profile button
                     HStack {
-                        NavigationLink(destination: CharacterSetsView()) {
-                            Text("Set Characters")
-                                .font(.subheadline)
-                                .foregroundColor(Color("Blue 900"))
-                                .padding(.horizontal, 16)
-                                .padding(.vertical, 10)
-                                .background(Color("Sand 100"))
-                                .cornerRadius(8)
-                        }
-                        
                         Spacer()
                         
                         Button(action: {
@@ -35,7 +17,7 @@ struct HomeView: View {
                         }) {
                             Image(systemName: "person.circle.fill")
                                 .font(.title2)
-                                .foregroundColor(Color("Sand 100"))
+                                .foregroundColor(Color("Blue 900"))
                         }
                     }
                     .padding(.horizontal)
@@ -43,34 +25,48 @@ struct HomeView: View {
 
                     Spacer()
 
-                    Text("Ocean: Chinese Character Writing")
+                    Text("Chinese Character Writing")
                         .font(.system(size: 60)).bold()
                         .foregroundColor(Color("Blue 900"))
+                        .padding(.bottom, 30)
 
-                    HStack(spacing: 20) {
+                    HStack(spacing: 24) {
                         NavigationLink(destination: SentencePracticeView()) {
                             Text("Sentence Practice")
-                                .font(.title3)
+                                .font(.title2)
+                                .fontWeight(.semibold)
                                 .foregroundColor(Color("Sand 100"))
-                                .padding(.horizontal, 20)
-                                .padding(.vertical, 16)
-                                .frame(maxWidth: 220)
+                                .padding(.horizontal, 28)
+                                .padding(.vertical, 20)
+                                .frame(minWidth: 200)
                                 .background(Color("Blue 700"))
-                                .cornerRadius(12)
-                                .shadow(color: Color("Blue 700").opacity(0.25), radius: 8, x: 0, y: 4)
+                                .cornerRadius(14)
+                                .shadow(color: Color("Blue 700").opacity(0.3), radius: 10, x: 0, y: 5)
                         }
 
                         NavigationLink(destination: FlashcardPracticeView()) {
                             Text("Flashcards")
-                                .font(.title3)
+                                .font(.title2)
+                                .fontWeight(.semibold)
                                 .foregroundColor(Color("Sand 100"))
-                                .padding(.horizontal, 20)
-                                .padding(.vertical, 16)
-                                .frame(maxWidth: 220)
+                                .padding(.horizontal, 28)
+                                .padding(.vertical, 20)
+                                .frame(minWidth: 200)
                                 .background(Color("Blue 700"))
-                                .cornerRadius(12)
-                                .shadow(color: Color("Blue 700").opacity(0.25), radius: 8, x: 0, y: 4)
+                                .cornerRadius(14)
+                                .shadow(color: Color("Blue 700").opacity(0.3), radius: 10, x: 0, y: 5)
                         }
+                    }
+                    
+                    NavigationLink(destination: CharacterSetsView()) {
+                        Text("Set Characters")
+                            .font(.title3)
+                            .foregroundColor(Color("Blue 900"))
+                            .padding(.horizontal, 24)
+                            .padding(.vertical, 14)
+                            .background(Color.white)
+                            .cornerRadius(10)
+                            .shadow(color: Color.black.opacity(0.1), radius: 4, x: 0, y: 2)
                     }
                     
                     Spacer()

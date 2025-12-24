@@ -13,6 +13,12 @@ struct LearningSet: Identifiable, Codable, Equatable {
         self.characters = characters
         self.items = items
     }
+    
+    var hasDefinitions: Bool {
+        guard let items = items, !items.isEmpty else { return false }
+        // Check if at least one item has a non-empty definition
+        return items.contains { !$0.definition.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+    }
 }
 
 final class LearningSetsStore: ObservableObject {
