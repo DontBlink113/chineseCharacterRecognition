@@ -11,6 +11,16 @@ struct FlashcardPracticeView: View {
     @State private var currentIndex: Int = 0
     @State private var currentPrompt: String = ""
     @State private var currentCharacter: String = ""
+    @State private var analysisResult: CharacterAnalysisResult? = nil
+    @State private var showFeedback: Bool = false
+    
+    // Tunable parameters
+    @State private var showSettings: Bool = false
+    @State private var errorThreshold: Double = 0.5
+    @State private var distanceWeight: Double = 0.7
+    @State private var lengthWeight: Double = 0.3
+    @State private var temperature: Double = 0.1
+    @State private var priorSigma: Double = 2.0
 
     private var selectedSet: LearningSet? {
         if let id = selectedSetId { return store.sets.first { $0.id == id } }
@@ -146,6 +156,20 @@ struct FlashcardPracticeView: View {
                                 .shadow(color: Color.black.opacity(0.1), radius: 4, x: 0, y: 2)
                         }
                         
+                        Button(action: { 
+                            withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
+                                showSettings.toggle()
+                            }
+                        }) {
+                            Image(systemName: "slider.horizontal.3")
+                                .font(.title3)
+                                .foregroundColor(Color("Blue 700"))
+                                .frame(width: 44, height: 44)
+                                .background(showSettings ? Color("Blue 700").opacity(0.2) : Color.white)
+                                .clipShape(Circle())
+                                .shadow(color: Color.black.opacity(0.1), radius: 4, x: 0, y: 2)
+                        }
+                        
                         Spacer()
                         
                         // Definition prompt - centered
@@ -170,6 +194,12 @@ struct FlashcardPracticeView: View {
                     .padding(.horizontal, 24)
                     .padding(.vertical, 16)
                     .background(Color(red: 0.68, green: 0.85, blue: 0.9).opacity(0.3))
+                    
+                    // Settings panel
+                    if showSettings {
+                        settingsPanel
+                            .transition(.move(edge: .top).combined(with: .opacity))
+                    }
                     
                     // Drawing area
                     ZStack {
@@ -203,43 +233,112 @@ struct FlashcardPracticeView: View {
                         drawingCanvas
                     }
                     
-                    // Bottom action bar
-                    HStack(spacing: 12) {
-                        Button(action: finishCharacter) {
-                            HStack {
-                                Image(systemName: "checkmark.circle.fill")
-                                Text("Check")
+                    // Bottom action bar and feedback
+                    VStack(spacing: 0) {
+                        // Feedback display
+                        if showFeedback, let result = analysisResult {
+                            VStack(spacing: 12) {
+                                // Visualization boxes
+                                HStack(spacing: 12) {
+                                    // User strokes (normalized)
+                                    VStack(spacing: 4) {
+                                        Text("Your Strokes")
+                                            .font(.caption)
+                                            .foregroundColor(Color("Blue 700"))
+                                        
+                                        NormalizedStrokeView(
+                                            strokes: result.userStrokes,
+                                            isReference: false
+                                        )
+                                        .frame(width: 120, height: 120)
+                                        .background(Color.white)
+                                        .cornerRadius(8)
+                                        .overlay(
+                                            RoundedRectangle(cornerRadius: 8)
+                                                .stroke(Color("Blue 700").opacity(0.3), lineWidth: 1)
+                                        )
+                                    }
+                                    
+                                    // Reference strokes (normalized)
+                                    VStack(spacing: 4) {
+                                        Text("Reference")
+                                            .font(.caption)
+                                            .foregroundColor(Color("Green"))
+                                        
+                                        ReferenceStrokeView(
+                                            referenceStrokes: result.referenceStrokes
+                                        )
+                                        .frame(width: 120, height: 120)
+                                        .background(Color.white)
+                                        .cornerRadius(8)
+                                        .overlay(
+                                            RoundedRectangle(cornerRadius: 8)
+                                                .stroke(Color("Green").opacity(0.3), lineWidth: 1)
+                                        )
+                                    }
+                                }
+                                
+                                // Analysis text
+                                VStack(alignment: .leading, spacing: 8) {
+                                    Text("Stroke Analysis")
+                                        .font(.headline)
+                                        .foregroundColor(Color("Blue 900"))
+                                    
+                                    ScrollView {
+                                        Text(result.summaryText)
+                                            .font(.system(.body, design: .monospaced))
+                                            .foregroundColor(Color("Blue 900"))
+                                            .frame(maxWidth: .infinity, alignment: .leading)
+                                    }
+                                    .frame(maxHeight: 100)
+                                }
                             }
-                            .font(.headline)
-                            .foregroundColor(Color("Sand 100"))
-                            .frame(maxWidth: .infinity)
-                            .padding(.vertical, 16)
-                            .background(Color("Blue 700"))
+                            .padding(16)
+                            .background(Color.white.opacity(0.9))
                             .cornerRadius(12)
-                            .shadow(color: Color("Blue 700").opacity(0.3), radius: 8, x: 0, y: 4)
+                            .padding(.horizontal, 24)
+                            .padding(.top, 12)
                         }
                         
-                        Button(action: nextCard) {
-                            HStack {
-                                Text("Next")
-                                Image(systemName: "arrow.right")
+                        HStack(spacing: 12) {
+                            Button(action: finishCharacter) {
+                                HStack {
+                                    Image(systemName: "checkmark.circle.fill")
+                                    Text("Check")
+                                }
+                                .font(.headline)
+                                .foregroundColor(Color("Sand 100"))
+                                .frame(maxWidth: .infinity)
+                                .padding(.vertical, 16)
+                                .background(Color("Blue 700"))
+                                .cornerRadius(12)
+                                .shadow(color: Color("Blue 700").opacity(0.3), radius: 8, x: 0, y: 4)
                             }
-                            .font(.headline)
-                            .foregroundColor(Color("Blue 700"))
-                            .frame(maxWidth: .infinity)
-                            .padding(.vertical, 16)
-                            .background(Color.white)
-                            .cornerRadius(12)
-                            .overlay(
-                                RoundedRectangle(cornerRadius: 12)
-                                    .stroke(Color("Blue 700"), lineWidth: 2)
-                            )
-                            .shadow(color: Color.black.opacity(0.1), radius: 4, x: 0, y: 2)
+                            .disabled(showFeedback)
+                            .opacity(showFeedback ? 0.5 : 1.0)
+                            
+                            Button(action: nextCard) {
+                                HStack {
+                                    Text("Next")
+                                    Image(systemName: "arrow.right")
+                                }
+                                .font(.headline)
+                                .foregroundColor(Color("Blue 700"))
+                                .frame(maxWidth: .infinity)
+                                .padding(.vertical, 16)
+                                .background(Color.white)
+                                .cornerRadius(12)
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 12)
+                                        .stroke(Color("Blue 700"), lineWidth: 2)
+                                )
+                                .shadow(color: Color.black.opacity(0.1), radius: 4, x: 0, y: 2)
+                            }
                         }
+                        .padding(.horizontal, 24)
+                        .padding(.vertical, 16)
+                        .background(Color(red: 0.68, green: 0.85, blue: 0.9).opacity(0.3))
                     }
-                    .padding(.horizontal, 24)
-                    .padding(.vertical, 16)
-                    .background(Color(red: 0.68, green: 0.85, blue: 0.9).opacity(0.3))
                 }
                 .navigationTitle("Flashcards")
                 .navigationBarTitleDisplayMode(.inline)
@@ -306,12 +405,148 @@ struct FlashcardPracticeView: View {
     }
 
     private func finishCharacter() {
+        // Perform stroke analysis with tunable parameters
+        let userStrokes = viewModel.currentCharacter.strokes
+        
+        if !userStrokes.isEmpty && !currentCharacter.isEmpty {
+            analysisResult = StrokeAnalyzer.analyzeCharacter(
+                userStrokes: userStrokes,
+                character: currentCharacter,
+                errorThreshold: errorThreshold,
+                distanceWeight: distanceWeight,
+                lengthWeight: lengthWeight,
+                temperature: temperature,
+                priorSigma: priorSigma
+            )
+            showFeedback = true
+        }
+        
         viewModel.completeCurrentCharacter()
-        // Analysis intentionally omitted for now per request
+    }
+    
+    // Settings panel view
+    private var settingsPanel: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            HStack {
+                Text("Analysis Parameters")
+                    .font(.headline)
+                    .foregroundColor(Color("Blue 900"))
+                Spacer()
+                Button(action: resetParameters) {
+                    Text("Reset")
+                        .font(.caption)
+                        .foregroundColor(Color("Blue 700"))
+                }
+            }
+            
+            VStack(alignment: .leading, spacing: 12) {
+                // Error Threshold
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack {
+                        Text("Error Threshold")
+                            .font(.subheadline)
+                        Spacer()
+                        Text(String(format: "%.2f", errorThreshold))
+                            .font(.subheadline.monospacedDigit())
+                            .foregroundColor(Color("Blue 700"))
+                    }
+                    Slider(value: $errorThreshold, in: 0.1...1.0, step: 0.05)
+                        .accentColor(Color("Blue 700"))
+                    Text("Lower = stricter matching")
+                        .font(.caption)
+                        .foregroundColor(Color("Neutral 700"))
+                }
+                
+                Divider()
+                
+                // Distance Weight
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack {
+                        Text("Distance Weight")
+                            .font(.subheadline)
+                        Spacer()
+                        Text(String(format: "%.2f", distanceWeight))
+                            .font(.subheadline.monospacedDigit())
+                            .foregroundColor(Color("Blue 700"))
+                    }
+                    Slider(value: $distanceWeight, in: 0.0...1.0, step: 0.05)
+                        .accentColor(Color("Blue 700"))
+                }
+                
+                // Length Weight
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack {
+                        Text("Length Weight")
+                            .font(.subheadline)
+                        Spacer()
+                        Text(String(format: "%.2f", lengthWeight))
+                            .font(.subheadline.monospacedDigit())
+                            .foregroundColor(Color("Blue 700"))
+                    }
+                    Slider(value: $lengthWeight, in: 0.0...1.0, step: 0.05)
+                        .accentColor(Color("Blue 700"))
+                }
+                
+                Divider()
+                
+                // Temperature
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack {
+                        Text("Temperature")
+                            .font(.subheadline)
+                        Spacer()
+                        Text(String(format: "%.2f", temperature))
+                            .font(.subheadline.monospacedDigit())
+                            .foregroundColor(Color("Blue 700"))
+                    }
+                    Slider(value: $temperature, in: 0.01...0.5, step: 0.01)
+                        .accentColor(Color("Blue 700"))
+                    Text("Lower = sharper probability distribution")
+                        .font(.caption)
+                        .foregroundColor(Color("Neutral 700"))
+                }
+                
+                // Prior Sigma
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack {
+                        Text("Prior Sigma")
+                            .font(.subheadline)
+                        Spacer()
+                        Text(String(format: "%.1f", priorSigma))
+                            .font(.subheadline.monospacedDigit())
+                            .foregroundColor(Color("Blue 700"))
+                    }
+                    Slider(value: $priorSigma, in: 0.5...5.0, step: 0.5)
+                        .accentColor(Color("Blue 700"))
+                    Text("Controls stroke order importance")
+                        .font(.caption)
+                        .foregroundColor(Color("Neutral 700"))
+                }
+            }
+        }
+        .padding(16)
+        .background(Color.white.opacity(0.95))
+        .cornerRadius(12)
+        .shadow(color: Color.black.opacity(0.15), radius: 8, x: 0, y: 4)
+        .padding(.horizontal, 24)
+        .padding(.top, 8)
+    }
+    
+    private func resetParameters() {
+        errorThreshold = 0.5
+        distanceWeight = 0.7
+        lengthWeight = 0.3
+        temperature = 0.1
+        priorSigma = 2.0
     }
 
     private func nextCard() {
         guard !flashcardItems.isEmpty else { return }
+        
+        // Clear feedback
+        showFeedback = false
+        analysisResult = nil
+        
         if shuffle {
             currentIndex = Int.random(in: 0..<flashcardItems.count)
         } else {
@@ -393,6 +628,90 @@ private struct StrokePath: Shape {
         }
         
         return path
+    }
+}
+
+// MARK: - Normalized Stroke Visualization
+
+/// View that displays normalized user strokes
+private struct NormalizedStrokeView: View {
+    let strokes: [Stroke]
+    let isReference: Bool
+    
+    var body: some View {
+        GeometryReader { geometry in
+            let size = min(geometry.size.width, geometry.size.height)
+            
+            // Normalize strokes for display
+            let normalizedStrokes = StrokeAnalyzer.normalizeUserStrokes(strokes)
+            
+            ForEach(normalizedStrokes, id: \.id) { stroke in
+                Path { path in
+                    let points = stroke.points.map { point in
+                        CGPoint(
+                            x: point.location.x * size,
+                            y: point.location.y * size
+                        )
+                    }
+                    
+                    guard !points.isEmpty else { return }
+                    
+                    path.move(to: points[0])
+                    for i in 1..<points.count {
+                        path.addLine(to: points[i])
+                    }
+                }
+                .stroke(Color.blue, lineWidth: 2)
+            }
+            
+            // Bounding box
+            Rectangle()
+                .stroke(Color.gray.opacity(0.3), lineWidth: 1)
+                .frame(width: size, height: size)
+        }
+    }
+}
+
+/// View that displays reference strokes from medians
+private struct ReferenceStrokeView: View {
+    let referenceStrokes: [ReferenceStroke]
+    
+    var body: some View {
+        GeometryReader { geometry in
+            let size = min(geometry.size.width, geometry.size.height)
+            
+            ForEach(Array(referenceStrokes.enumerated()), id: \.offset) { index, refStroke in
+                Path { path in
+                    let points = refStroke.medianPoints.map { point in
+                        CGPoint(
+                            x: point.x * size,
+                            y: point.y * size
+                        )
+                    }
+                    
+                    guard !points.isEmpty else { return }
+                    
+                    path.move(to: points[0])
+                    for i in 1..<points.count {
+                        path.addLine(to: points[i])
+                    }
+                }
+                .stroke(Color.green, lineWidth: 2)
+                
+                // Draw median points as small circles
+                ForEach(Array(refStroke.medianPoints.enumerated()), id: \.offset) { _, point in
+                    Circle()
+                        .fill(Color.green.opacity(0.5))
+                        .frame(width: 4, height: 4)
+                        .position(x: point.x * size, y: point.y * size)
+                }
+            }
+            
+            // Bounding box
+            Rectangle()
+                .stroke(Color.gray.opacity(0.3), lineWidth: 1)
+                .frame(width: size, height: size)
+        }
     }
 }
 
