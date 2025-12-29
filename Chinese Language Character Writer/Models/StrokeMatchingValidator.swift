@@ -75,10 +75,10 @@ class StrokeMatchingValidator: ObservableObject {
     @Published var metrics: ValidationMetrics?
     
     // Algorithm parameters (can be tuned)
-    var errorThreshold: Double = 0.5
-    var distanceWeight: Double = 0.7
-    var lengthWeight: Double = 0.3
-    var temperature: Double = 0.1
+    var errorThreshold: Double = 0.4
+    var distanceWeight: Double = 0.8
+    var lengthWeight: Double = 0.2
+    var temperature: Double = 0.05
     var priorSigma: Double = 2.0
     
     // Cache graphics data to avoid reloading for every entry
