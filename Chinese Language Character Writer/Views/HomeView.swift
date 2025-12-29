@@ -69,6 +69,21 @@ struct HomeView: View {
                             .shadow(color: Color.black.opacity(0.1), radius: 4, x: 0, y: 2)
                     }
                     
+                    // Validation Mode button
+                    NavigationLink(destination: ValidationModeView()) {
+                        HStack {
+                            Image(systemName: "checkmark.seal.fill")
+                            Text("Validation Mode")
+                        }
+                        .font(.title3)
+                        .foregroundColor(.white)
+                        .padding(.horizontal, 24)
+                        .padding(.vertical, 14)
+                        .background(Color.orange)
+                        .cornerRadius(10)
+                        .shadow(color: Color.orange.opacity(0.3), radius: 4, x: 0, y: 2)
+                    }
+                    
                     Spacer()
                 }
             }
