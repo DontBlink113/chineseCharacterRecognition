@@ -39,7 +39,7 @@ struct ValidationTestView: View {
                 ValidationSettingsSheet(validator: validator)
             }
             .sheet(isPresented: $showingOptimizer) {
-                ParameterOptimizationView()
+                ParameterOptimizationView(validator: validator)
             }
         }
     }
@@ -352,40 +352,39 @@ struct ValidationSettingsSheet: View {
     var body: some View {
         NavigationView {
             Form {
+                Section(header: Text("Baseline Algorithm")) {
+                    Text("Fréchet distance + Optimal assignment")
+                        .font(.caption)
+                        .foregroundColor(.gray)
+                        .italic()
+                }
+                
                 Section(header: Text("Algorithm Parameters")) {
-                    VStack(alignment: .leading) {
-                        Text("Error Threshold: \(String(format: "%.2f", validator.errorThreshold))")
-                        Slider(value: $validator.errorThreshold, in: 0.1...1.0, step: 0.05)
-                    }
+                    Toggle("Use Uniform Prior", isOn: $validator.useUniformPrior)
+                        .onChange(of: validator.useUniformPrior) { _ in
+                            // Force UI update
+                        }
                     
-                    VStack(alignment: .leading) {
-                        Text("Distance Weight: \(String(format: "%.2f", validator.distanceWeight))")
-                        Slider(value: $validator.distanceWeight, in: 0...1, step: 0.05)
-                    }
-                    
-                    VStack(alignment: .leading) {
-                        Text("Length Weight: \(String(format: "%.2f", validator.lengthWeight))")
-                        Slider(value: $validator.lengthWeight, in: 0...1, step: 0.05)
-                    }
-                    
-                    VStack(alignment: .leading) {
-                        Text("Temperature: \(String(format: "%.2f", validator.temperature))")
-                        Slider(value: $validator.temperature, in: 0.01...1.0, step: 0.01)
-                    }
-                    
-                    VStack(alignment: .leading) {
-                        Text("Prior Sigma: \(String(format: "%.2f", validator.priorSigma))")
-                        Slider(value: $validator.priorSigma, in: 0.5...5.0, step: 0.1)
+                    if !validator.useUniformPrior {
+                        VStack(alignment: .leading) {
+                            Text("Prior Sigma: \(String(format: "%.2f", validator.priorSigma))")
+                            Slider(value: $validator.priorSigma, in: 0.5...5.0, step: 0.1)
+                            Text("Controls stroke order importance (higher = more flexible)")
+                                .font(.caption)
+                                .foregroundColor(.gray)
+                        }
+                    } else {
+                        Text("Using uniform prior (no stroke order preference)")
+                            .font(.caption)
+                            .foregroundColor(.gray)
+                            .italic()
                     }
                 }
                 
                 Section {
                     Button("Reset to Defaults") {
-                        validator.errorThreshold = 0.5
-                        validator.distanceWeight = 0.7
-                        validator.lengthWeight = 0.3
-                        validator.temperature = 0.1
                         validator.priorSigma = 2.0
+                        validator.useUniformPrior = false
                     }
                 }
             }

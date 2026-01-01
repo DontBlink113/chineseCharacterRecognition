@@ -2,13 +2,9 @@ import Foundation
 
 // MARK: - Parameter Set
 
-/// A set of algorithm parameters to test
+/// A set of algorithm parameters to test (baseline algorithm)
 struct ParameterSet: Identifiable {
     let id = UUID()
-    let errorThreshold: Double
-    let distanceWeight: Double
-    let lengthWeight: Double
-    let temperature: Double
     let priorSigma: Double
     
     var accuracy: Double = 0
@@ -17,11 +13,8 @@ struct ParameterSet: Identifiable {
     /// Description for display
     var description: String {
         """
-        Error Threshold: \(String(format: "%.2f", errorThreshold))
-        Distance Weight: \(String(format: "%.2f", distanceWeight))
-        Length Weight: \(String(format: "%.2f", lengthWeight))
-        Temperature: \(String(format: "%.2f", temperature))
         Prior Sigma: \(String(format: "%.2f", priorSigma))
+        Algorithm: Fréchet distance + Optimal assignment
         """
     }
 }
@@ -36,9 +29,7 @@ struct OptimizationResult {
     
     var improvementOverDefault: Double {
         let defaultAccuracy = allResults.first(where: { 
-            $0.errorThreshold == 0.5 && 
-            $0.distanceWeight == 0.7 && 
-            $0.lengthWeight == 0.3 
+            $0.priorSigma == 2.0
         })?.accuracy ?? 0
         
         return bestParameters.accuracy - defaultAccuracy
@@ -150,7 +141,7 @@ class ParameterOptimizer: ObservableObject {
         return updatedParams
     }
     
-    /// Validate a single entry with specific parameters
+    /// Validate a single entry with specific parameters using baseline algorithm
     private func validateEntry(_ entry: ValidationEntry, with params: ParameterSet) -> ValidationResult {
         // Convert LabeledStrokes to regular Strokes
         let userStrokes = entry.userStrokes.map { labeledStroke -> Stroke in
@@ -197,25 +188,12 @@ class ParameterOptimizer: ObservableObject {
         
         let normalizedUserStrokes = StrokeAnalyzer.normalizeUserStrokes(userStrokes)
         
-        var predictions: [Int?] = []
-        
-        for userStroke in normalizedUserStrokes {
-            var errors: [Double] = []
-            for refStroke in referenceStrokes {
-                let error = StrokeAnalyzer.calculateError(
-                    userStroke: userStroke,
-                    referenceStroke: refStroke,
-                    distanceWeight: params.distanceWeight,
-                    lengthWeight: params.lengthWeight
-                )
-                errors.append(error)
-            }
-            
-            let bestMatchIndex = errors.enumerated().min(by: { $0.element < $1.element })?.offset ?? 0
-            let rawError = errors[bestMatchIndex]
-            let isMatched = rawError <= params.errorThreshold
-            predictions.append(isMatched ? bestMatchIndex : nil)
-        }
+        // Use optimal assignment algorithm (baseline)
+        let predictions = StrokeAnalyzer.findOptimalAssignment(
+            userStrokes: normalizedUserStrokes,
+            referenceStrokes: referenceStrokes,
+            priorSigma: params.priorSigma
+        )
         
         let groundTruth = entry.userStrokes.map { $0.groundTruthMatch }
         let correctCount = zip(predictions, groundTruth).filter { $0 == $1 }.count
@@ -245,104 +223,53 @@ class ParameterOptimizer: ObservableObject {
         }
     }
     
-    /// Quick search: Test a few key combinations (~10 tests)
+    /// Quick search: Test a few key combinations (~5 tests)
     private func generateQuickSearch() -> [ParameterSet] {
         var sets: [ParameterSet] = []
         
-        let errorThresholds: [Double] = [0.3, 0.5, 0.7]
-        let distanceWeights: [Double] = [0.5, 0.7, 0.9]
+        let priorSigmas: [Double] = [0.5, 1.0, 2.0, 3.0, 5.0]
         
-        for errorThreshold in errorThresholds {
-            for distanceWeight in distanceWeights {
-                sets.append(ParameterSet(
-                    errorThreshold: errorThreshold,
-                    distanceWeight: distanceWeight,
-                    lengthWeight: 1.0 - distanceWeight,
-                    temperature: 0.1,
-                    priorSigma: 2.0
-                ))
-            }
+        for priorSigma in priorSigmas {
+            sets.append(ParameterSet(priorSigma: priorSigma))
         }
         
         return sets
     }
     
-    /// Coarse search: Test broader range (~50 tests)
+    /// Coarse search: Test broader range (~10 tests)
     private func generateCoarseSearch() -> [ParameterSet] {
         var sets: [ParameterSet] = []
         
-        let errorThresholds: [Double] = [0.2, 0.3, 0.4, 0.5, 0.6]
-        let distanceWeights: [Double] = [0.5, 0.6, 0.7, 0.8, 0.9]
-        let temperatures: [Double] = [0.05, 0.1, 0.2]
+        let priorSigmas: [Double] = stride(from: 0.5, through: 5.0, by: 0.5).map { $0 }
         
-        for errorThreshold in errorThresholds {
-            for distanceWeight in distanceWeights {
-                for temperature in temperatures {
-                    sets.append(ParameterSet(
-                        errorThreshold: errorThreshold,
-                        distanceWeight: distanceWeight,
-                        lengthWeight: 1.0 - distanceWeight,
-                        temperature: temperature,
-                        priorSigma: 2.0
-                    ))
-                }
-            }
+        for priorSigma in priorSigmas {
+            sets.append(ParameterSet(priorSigma: priorSigma))
         }
         
         return sets
     }
     
-    /// Fine search: Test finer granularity (~200 tests)
+    /// Fine search: Test finer granularity (~20 tests)
     private func generateFineSearch() -> [ParameterSet] {
         var sets: [ParameterSet] = []
         
-        let errorThresholds: [Double] = stride(from: 0.2, through: 0.8, by: 0.1).map { $0 }
-        let distanceWeights: [Double] = stride(from: 0.5, through: 0.9, by: 0.05).map { $0 }
-        let temperatures: [Double] = [0.05, 0.1, 0.15, 0.2]
-        let priorSigmas: [Double] = [1.5, 2.0, 2.5]
+        let priorSigmas: [Double] = stride(from: 0.5, through: 5.0, by: 0.25).map { $0 }
         
-        for errorThreshold in errorThresholds {
-            for distanceWeight in distanceWeights {
-                for temperature in temperatures {
-                    for priorSigma in priorSigmas {
-                        sets.append(ParameterSet(
-                            errorThreshold: errorThreshold,
-                            distanceWeight: distanceWeight,
-                            lengthWeight: 1.0 - distanceWeight,
-                            temperature: temperature,
-                            priorSigma: priorSigma
-                        ))
-                    }
-                }
-            }
+        for priorSigma in priorSigmas {
+            sets.append(ParameterSet(priorSigma: priorSigma))
         }
         
         return sets
     }
     
-    /// Exhaustive search: Test all combinations (~1000+ tests)
+    /// Exhaustive search: Test all combinations (~50 tests)
     private func generateExhaustiveSearch() -> [ParameterSet] {
         var sets: [ParameterSet] = []
         
-        let errorThresholds: [Double] = stride(from: 0.1, through: 1.0, by: 0.05).map { $0 }
-        let distanceWeights: [Double] = stride(from: 0.3, through: 1.0, by: 0.05).map { $0 }
-        let temperatures: [Double] = stride(from: 0.01, through: 0.5, by: 0.05).map { $0 }
-        let priorSigmas: [Double] = stride(from: 0.5, through: 5.0, by: 0.5).map { $0 }
+        let priorSigmas: [Double] = stride(from: 0.1, through: 10.0, by: 0.2).map { $0 }
         
-        for errorThreshold in errorThresholds {
-            for distanceWeight in distanceWeights {
-                for temperature in temperatures {
-                    for priorSigma in priorSigmas {
-                        sets.append(ParameterSet(
-                            errorThreshold: errorThreshold,
-                            distanceWeight: distanceWeight,
-                            lengthWeight: 1.0 - distanceWeight,
-                            temperature: temperature,
-                            priorSigma: priorSigma
-                        ))
-                    }
-                }
-            }
+        for priorSigma in priorSigmas {
+            sets.append(ParameterSet(priorSigma: priorSigma))
         }
         
         return sets
@@ -362,13 +289,13 @@ enum SearchStrategy: String, CaseIterable, Identifiable {
     var description: String {
         switch self {
         case .quick:
-            return "~10 tests, 30 seconds"
+            return "~5 tests, 10-20 seconds"
         case .coarse:
-            return "~75 tests, 3-5 minutes"
+            return "~10 tests, 30-60 seconds"
         case .fine:
-            return "~500 tests, 15-20 minutes"
+            return "~20 tests, 1-2 minutes"
         case .exhaustive:
-            return "~10,000 tests, 3-5 hours"
+            return "~50 tests, 3-5 minutes"
         }
     }
 }

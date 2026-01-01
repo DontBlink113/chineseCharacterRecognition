@@ -74,12 +74,9 @@ class StrokeMatchingValidator: ObservableObject {
     @Published var results: [ValidationResult] = []
     @Published var metrics: ValidationMetrics?
     
-    // Algorithm parameters (can be tuned)
-    var errorThreshold: Double = 0.4
-    var distanceWeight: Double = 0.8
-    var lengthWeight: Double = 0.2
-    var temperature: Double = 0.05
-    var priorSigma: Double = 2.0
+    // Algorithm parameters (baseline algorithm)
+    @Published var priorSigma: Double = 2.0
+    @Published var useUniformPrior: Bool = true
     
     // Cache graphics data to avoid reloading for every entry
     private var graphicsDataCache: [String: ReferenceCharacter]?
@@ -139,7 +136,7 @@ class StrokeMatchingValidator: ObservableObject {
         }
     }
     
-    /// Validate a single entry (optimized with cached graphics data)
+    /// Validate a single entry using baseline algorithm (Fréchet distance + optimal assignment)
     func validateEntry(_ entry: ValidationEntry) -> ValidationResult {
         // Convert LabeledStrokes to regular Strokes for the analyzer
         let userStrokes = entry.userStrokes.map { labeledStroke -> Stroke in
@@ -191,30 +188,13 @@ class StrokeMatchingValidator: ObservableObject {
         // Normalize user strokes
         let normalizedUserStrokes = StrokeAnalyzer.normalizeUserStrokes(userStrokes)
         
-        // Analyze each user stroke
-        var predictions: [Int?] = []
-        
-        for (userIdx, userStroke) in normalizedUserStrokes.enumerated() {
-            // Calculate raw errors for all reference strokes
-            var errors: [Double] = []
-            for refStroke in referenceStrokes {
-                let error = StrokeAnalyzer.calculateError(
-                    userStroke: userStroke,
-                    referenceStroke: refStroke,
-                    distanceWeight: distanceWeight,
-                    lengthWeight: lengthWeight
-                )
-                errors.append(error)
-            }
-            
-            // Find best match based on raw error
-            let bestMatchIndex = errors.enumerated().min(by: { $0.element < $1.element })?.offset ?? 0
-            let rawError = errors[bestMatchIndex]
-            
-            // Check if error exceeds threshold
-            let isMatched = rawError <= errorThreshold
-            predictions.append(isMatched ? bestMatchIndex : nil)
-        }
+        // Use optimal assignment algorithm (baseline)
+        let predictions = StrokeAnalyzer.findOptimalAssignment(
+            userStrokes: normalizedUserStrokes,
+            referenceStrokes: referenceStrokes,
+            priorSigma: priorSigma,
+            useUniformPrior: useUniformPrior
+        )
         
         // Get ground truth
         let groundTruth = entry.userStrokes.map { $0.groundTruthMatch }

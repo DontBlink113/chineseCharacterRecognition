@@ -208,7 +208,51 @@ class StrokeAnalyzer {
     
     // MARK: - Distance Calculation
     
-    /// Calculate bidirectional Hausdorff-like distance between strokes
+    /// Calculate Fréchet distance between two curves
+    /// This is the discrete Fréchet distance, which measures similarity between curves
+    static func calculateFrechetDistance(userStroke: Stroke, referenceStroke: ReferenceStroke) -> Double {
+        guard !userStroke.points.isEmpty, !referenceStroke.medianPoints.isEmpty else {
+            return Double.infinity
+        }
+        
+        let userPoints = userStroke.points.map { $0.location }
+        let refPoints = referenceStroke.medianPoints
+        
+        let n = userPoints.count
+        let m = refPoints.count
+        
+        // Dynamic programming table for Fréchet distance
+        var dp = Array(repeating: Array(repeating: -1.0, count: m), count: n)
+        
+        func computeFrechet(_ i: Int, _ j: Int) -> Double {
+            if dp[i][j] >= 0 {
+                return dp[i][j]
+            }
+            
+            let dx = Double(userPoints[i].x - refPoints[j].x)
+            let dy = Double(userPoints[i].y - refPoints[j].y)
+            let dist = sqrt(dx * dx + dy * dy)
+            
+            if i == 0 && j == 0 {
+                dp[i][j] = dist
+            } else if i == 0 {
+                dp[i][j] = max(computeFrechet(i, j - 1), dist)
+            } else if j == 0 {
+                dp[i][j] = max(computeFrechet(i - 1, j), dist)
+            } else {
+                let minPrev = min(computeFrechet(i - 1, j),
+                                 min(computeFrechet(i, j - 1),
+                                     computeFrechet(i - 1, j - 1)))
+                dp[i][j] = max(minPrev, dist)
+            }
+            
+            return dp[i][j]
+        }
+        
+        return computeFrechet(n - 1, m - 1)
+    }
+    
+    /// Calculate bidirectional Hausdorff-like distance between strokes (legacy)
     /// Measures how close the user stroke follows the reference stroke path
     static func calculateAverageDistance(userStroke: Stroke, referenceStroke: ReferenceStroke) -> Double {
         guard !userStroke.points.isEmpty, !referenceStroke.medianPoints.isEmpty else {
@@ -279,7 +323,12 @@ class StrokeAnalyzer {
     
     // MARK: - Error Calculation
     
-    /// Calculate combined error between user stroke and reference stroke
+    /// Calculate error using Fréchet distance (baseline algorithm)
+    static func calculateFrechetError(userStroke: Stroke, referenceStroke: ReferenceStroke) -> Double {
+        return calculateFrechetDistance(userStroke: userStroke, referenceStroke: referenceStroke)
+    }
+    
+    /// Calculate combined error between user stroke and reference stroke (legacy)
     /// Error = w1 * avgDistance + w2 * lengthDifference
     static func calculateError(userStroke: Stroke, referenceStroke: ReferenceStroke,
                               distanceWeight: Double = 0.7, lengthWeight: Double = 0.3) -> Double {
@@ -298,6 +347,83 @@ class StrokeAnalyzer {
         let distance = abs(userStrokeIndex - referenceStrokeIndex)
         // Gaussian prior centered at correct index
         return exp(-Double(distance * distance) / (2 * sigma * sigma))
+    }
+    
+    // MARK: - Optimal Assignment Algorithm
+    
+    /// Find optimal stroke assignment that maximizes total posterior probability
+    /// Uses Hungarian algorithm approach for maximum weight bipartite matching
+    /// Returns array where index is user stroke index, value is assigned reference stroke index (or nil if unassigned)
+    static func findOptimalAssignment(userStrokes: [Stroke], 
+                                     referenceStrokes: [ReferenceStroke],
+                                     priorSigma: Double = 2.0,
+                                     useUniformPrior: Bool = false) -> [Int?] {
+        let numUser = userStrokes.count
+        let numRef = referenceStrokes.count
+        
+        guard numUser > 0 && numRef > 0 else {
+            return Array(repeating: nil, count: numUser)
+        }
+        
+        // Calculate posterior probability matrix (likelihood × prior)
+        // posterior[i][j] = P(user_i matches ref_j)
+        var posteriorMatrix: [[Double]] = []
+        
+        for (userIdx, userStroke) in userStrokes.enumerated() {
+            var row: [Double] = []
+            for (refIdx, refStroke) in referenceStrokes.enumerated() {
+                // Calculate likelihood using Fréchet distance
+                let frechetDist = calculateFrechetDistance(userStroke: userStroke, referenceStroke: refStroke)
+                // Convert distance to likelihood (smaller distance = higher likelihood)
+                // Using exponential decay: likelihood = exp(-distance)
+                let likelihood = exp(-frechetDist)
+                
+                // Calculate prior based on stroke order (or use uniform prior)
+                let prior: Double
+                if useUniformPrior {
+                    prior = 1.0 / Double(numRef)  // Uniform prior
+                } else {
+                    prior = calculatePrior(userStrokeIndex: userIdx, 
+                                          referenceStrokeIndex: refIdx,
+                                          totalReferenceStrokes: numRef,
+                                          sigma: priorSigma)
+                }
+                
+                // Posterior = likelihood × prior
+                let posterior = likelihood * prior
+                row.append(posterior)
+            }
+            posteriorMatrix.append(row)
+        }
+        
+        // Find optimal assignment using greedy approach
+        // For a proper Hungarian algorithm, we'd need a more complex implementation
+        // This greedy approach iteratively assigns the highest posterior probability
+        var assignments: [Int?] = Array(repeating: nil, count: numUser)
+        var usedRefStrokes = Set<Int>()
+        
+        // Create list of all possible assignments with their posteriors
+        var candidates: [(userIdx: Int, refIdx: Int, posterior: Double)] = []
+        for userIdx in 0..<numUser {
+            for refIdx in 0..<numRef {
+                candidates.append((userIdx, refIdx, posteriorMatrix[userIdx][refIdx]))
+            }
+        }
+        
+        // Sort by posterior probability (descending)
+        candidates.sort { $0.posterior > $1.posterior }
+        
+        // Greedily assign strokes
+        var usedUserStrokes = Set<Int>()
+        for candidate in candidates {
+            if !usedUserStrokes.contains(candidate.userIdx) && !usedRefStrokes.contains(candidate.refIdx) {
+                assignments[candidate.userIdx] = candidate.refIdx
+                usedUserStrokes.insert(candidate.userIdx)
+                usedRefStrokes.insert(candidate.refIdx)
+            }
+        }
+        
+        return assignments
     }
     
     // MARK: - Softmax Probability
@@ -357,23 +483,18 @@ class StrokeAnalyzer {
     
     // MARK: - Main Analysis Function
     
-    /// Analyze user strokes against reference strokes for a character
+    /// Analyze user strokes against reference strokes for a character using baseline algorithm
+    /// Uses Fréchet distance and optimal assignment based on maximum posterior probability
     /// - Parameters:
     ///   - userStrokes: The strokes drawn by the user
     ///   - character: The target character
-    ///   - errorThreshold: Maximum raw error to consider a match valid (default: 0.5)
-    ///   - distanceWeight: Weight for average distance metric (default: 0.7)
-    ///   - lengthWeight: Weight for length difference metric (default: 0.3)
-    ///   - temperature: Softmax temperature (default: 0.1)
     ///   - priorSigma: Standard deviation for stroke order prior (default: 2.0)
+    ///   - useUniformPrior: If true, uses uniform prior instead of Gaussian (default: false)
     /// - Returns: Analysis result or nil if character not found
     static func analyzeCharacter(userStrokes: [Stroke], 
                                 character: String, 
-                                errorThreshold: Double = 0.5,
-                                distanceWeight: Double = 0.7,
-                                lengthWeight: Double = 0.3,
-                                temperature: Double = 0.1,
-                                priorSigma: Double = 2.0) -> CharacterAnalysisResult? {
+                                priorSigma: Double = 2.0,
+                                useUniformPrior: Bool = false) -> CharacterAnalysisResult? {
         // Load graphics data
         let graphicsData = loadGraphicsData()
         
@@ -393,45 +514,72 @@ class StrokeAnalyzer {
         // Normalize user strokes
         let normalizedUserStrokes = normalizeUserStrokes(userStrokes)
         
-        // Analyze each user stroke
+        // Use optimal assignment algorithm (baseline)
+        let assignments = findOptimalAssignment(
+            userStrokes: normalizedUserStrokes,
+            referenceStrokes: referenceStrokes,
+            priorSigma: priorSigma,
+            useUniformPrior: useUniformPrior
+        )
+        
+        // Build stroke results based on assignments
         var strokeResults: [StrokeAnalysisResult] = []
         
         for (userIdx, userStroke) in normalizedUserStrokes.enumerated() {
-            // Calculate raw errors (without prior) for all reference strokes using provided weights
-            var errors: [Double] = []
+            let assignedRefIdx = assignments[userIdx]
+            
+            // Calculate Fréchet distances to all reference strokes for display
+            var frechetDistances: [Double] = []
             for refStroke in referenceStrokes {
-                let error = calculateError(
-                    userStroke: userStroke, 
-                    referenceStroke: refStroke,
-                    distanceWeight: distanceWeight,
-                    lengthWeight: lengthWeight
-                )
-                errors.append(error)
+                let dist = calculateFrechetDistance(userStroke: userStroke, referenceStroke: refStroke)
+                frechetDistances.append(dist)
             }
             
-            // Find best match based on raw error
-            let bestMatchIndex = errors.enumerated().min(by: { $0.element < $1.element })?.offset ?? 0
-            let rawError = errors[bestMatchIndex]
+            // Calculate posterior probabilities for display
+            var probabilities: [Double] = []
+            for (refIdx, refStroke) in referenceStrokes.enumerated() {
+                let frechetDist = frechetDistances[refIdx]
+                let likelihood = exp(-frechetDist)
+                let prior: Double
+                if useUniformPrior {
+                    prior = 1.0 / Double(referenceStrokes.count)  // Uniform prior
+                } else {
+                    prior = calculatePrior(
+                        userStrokeIndex: userIdx,
+                        referenceStrokeIndex: refIdx,
+                        totalReferenceStrokes: referenceStrokes.count,
+                        sigma: priorSigma
+                    )
+                }
+                probabilities.append(likelihood * prior)
+            }
             
-            // Check if error exceeds threshold
-            let isMatched = rawError <= errorThreshold
+            // Normalize probabilities
+            let sumProb = probabilities.reduce(0, +)
+            if sumProb > 0 {
+                probabilities = probabilities.map { $0 / sumProb }
+            }
             
-            // Calculate probabilities (with prior) for display using provided temperature and sigma
-            let probabilities = calculateProbabilitiesWithParams(
-                userStrokeIndex: userIdx,
-                userStroke: userStroke,
-                referenceStrokes: referenceStrokes,
-                temperature: temperature,
-                priorSigma: priorSigma,
-                distanceWeight: distanceWeight,
-                lengthWeight: lengthWeight
-            )
-            let bestMatchProbability = probabilities[bestMatchIndex]
+            // Get raw error and probability for assigned match
+            let rawError: Double
+            let bestMatchProbability: Double
+            let isMatched: Bool
+            
+            if let refIdx = assignedRefIdx {
+                rawError = frechetDistances[refIdx]
+                bestMatchProbability = probabilities[refIdx]
+                isMatched = true
+            } else {
+                // No assignment - find minimum distance for display
+                rawError = frechetDistances.min() ?? Double.infinity
+                bestMatchProbability = 0.0
+                isMatched = false
+            }
             
             strokeResults.append(StrokeAnalysisResult(
                 userStrokeIndex: userIdx,
                 probabilities: probabilities,
-                bestMatchIndex: isMatched ? bestMatchIndex : nil,
+                bestMatchIndex: assignedRefIdx,
                 bestMatchProbability: bestMatchProbability,
                 rawError: rawError,
                 isMatched: isMatched

@@ -1,9 +1,11 @@
 import SwiftUI
 
 struct ParameterOptimizationView: View {
+    @ObservedObject var validator: StrokeMatchingValidator
     @StateObject private var optimizer = ParameterOptimizer()
     @Environment(\.dismiss) var dismiss
     @State private var selectedStrategy: SearchStrategy = .coarse
+    @State private var showingAppliedAlert = false
     
     var body: some View {
         NavigationView {
@@ -25,6 +27,11 @@ struct ParameterOptimizationView: View {
                     }
                     .disabled(optimizer.isOptimizing)
                 }
+            }
+            .alert("Parameters Applied", isPresented: $showingAppliedAlert) {
+                Button("OK", role: .cancel) { }
+            } message: {
+                Text("Optimized parameters have been applied to the validator.")
             }
         }
     }
@@ -168,10 +175,16 @@ struct ParameterOptimizationView: View {
             
             // Parameter values
             VStack(alignment: .leading, spacing: 12) {
-                ParameterRow(name: "Error Threshold", value: result.bestParameters.errorThreshold)
-                ParameterRow(name: "Distance Weight", value: result.bestParameters.distanceWeight)
-                ParameterRow(name: "Length Weight", value: result.bestParameters.lengthWeight)
-                ParameterRow(name: "Temperature", value: result.bestParameters.temperature)
+                Text("Baseline Algorithm")
+                    .font(.caption)
+                    .foregroundColor(.gray)
+                Text("Fréchet distance + Optimal assignment")
+                    .font(.caption)
+                    .foregroundColor(.gray)
+                    .italic()
+                
+                Divider()
+                
                 ParameterRow(name: "Prior Sigma", value: result.bestParameters.priorSigma)
             }
             .padding()
@@ -279,9 +292,14 @@ struct ParameterOptimizationView: View {
     }
     
     private func applyParameters(_ params: ParameterSet) {
-        // TODO: Apply parameters to the validator
-        // This would need to be passed back to the ValidationTestView
-        dismiss()
+        // Apply the optimized parameters to the validator
+        validator.priorSigma = params.priorSigma
+        showingAppliedAlert = true
+        
+        // Dismiss after a short delay to show the alert
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+            dismiss()
+        }
     }
 }
 
@@ -325,12 +343,13 @@ struct TopResultRow: View {
             }
             
             VStack(alignment: .leading, spacing: 4) {
-                Text("ET: \(String(format: "%.2f", params.errorThreshold)) | DW: \(String(format: "%.2f", params.distanceWeight)) | LW: \(String(format: "%.2f", params.lengthWeight))")
+                Text("Prior Sigma: \(String(format: "%.2f", params.priorSigma))")
                     .font(.caption)
                     .foregroundColor(.gray)
-                Text("Temp: \(String(format: "%.2f", params.temperature)) | Sigma: \(String(format: "%.2f", params.priorSigma))")
+                Text("Algorithm: Fréchet distance + Optimal assignment")
                     .font(.caption)
                     .foregroundColor(.gray)
+                    .italic()
             }
         }
         .padding()

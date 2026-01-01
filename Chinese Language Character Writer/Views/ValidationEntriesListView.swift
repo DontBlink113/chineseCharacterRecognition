@@ -12,6 +12,9 @@ struct ValidationEntriesListView: View {
     @State private var entryToAugment: ValidationEntry?
     @State private var showingClearAllConfirmation = false
     @State private var showingValidationTest = false
+    @State private var isEditMode = false
+    @State private var selectedEntries: Set<UUID> = []
+    @State private var showingDeleteSelectedConfirmation = false
     
     var body: some View {
         NavigationView {
@@ -32,10 +35,30 @@ struct ValidationEntriesListView: View {
                     }
                 } else {
                     List {
-                        Section(header: Text("Total Entries: \(entries.count)")) {
+                        Section(header: sectionHeader) {
                             ForEach(entries) { entry in
-                                ValidationEntryRow(entry: entry)
-                                    .swipeActions(edge: .leading, allowsFullSwipe: false) {
+                                HStack {
+                                    if isEditMode {
+                                        Button(action: {
+                                            toggleSelection(entry.id)
+                                        }) {
+                                            Image(systemName: selectedEntries.contains(entry.id) ? "checkmark.circle.fill" : "circle")
+                                                .foregroundColor(selectedEntries.contains(entry.id) ? .blue : .gray)
+                                                .font(.title3)
+                                        }
+                                        .buttonStyle(BorderlessButtonStyle())
+                                    }
+                                    
+                                    ValidationEntryRow(entry: entry)
+                                }
+                                .contentShape(Rectangle())
+                                .onTapGesture {
+                                    if isEditMode {
+                                        toggleSelection(entry.id)
+                                    }
+                                }
+                                .swipeActions(edge: .leading, allowsFullSwipe: false) {
+                                    if !isEditMode {
                                         Button {
                                             entryToAugment = entry
                                         } label: {
@@ -43,7 +66,9 @@ struct ValidationEntriesListView: View {
                                         }
                                         .tint(.blue)
                                     }
-                                    .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                                }
+                                .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                                    if !isEditMode {
                                         Button(role: .destructive) {
                                             entryToDelete = entry
                                             showingDeleteConfirmation = true
@@ -51,32 +76,60 @@ struct ValidationEntriesListView: View {
                                             Label("Delete", systemImage: "trash")
                                         }
                                     }
+                                }
                             }
                         }
                     }
                 }
             }
-            .navigationTitle("Validation Entries")
+            .navigationTitle(isEditMode ? "Select Entries" : "Validation Entries")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .navigationBarLeading) {
-                    Button("Close") {
-                        dismiss()
+                    if isEditMode {
+                        Button("Cancel") {
+                            isEditMode = false
+                            selectedEntries.removeAll()
+                        }
+                    } else {
+                        Button("Close") {
+                            dismiss()
+                        }
                     }
                 }
                 
                 ToolbarItem(placement: .navigationBarTrailing) {
-                    Button {
-                        showingValidationTest = true
-                    } label: {
-                        Label("Test Algorithm", systemImage: "checkmark.seal.fill")
+                    if isEditMode {
+                        Button("Delete (\(selectedEntries.count))") {
+                            showingDeleteSelectedConfirmation = true
+                        }
+                        .disabled(selectedEntries.isEmpty)
+                        .foregroundColor(selectedEntries.isEmpty ? .gray : .red)
+                    } else {
+                        Button(action: {
+                            isEditMode = true
+                        }) {
+                            Label("Select", systemImage: "checkmark.circle")
+                        }
+                        .disabled(entries.isEmpty)
                     }
-                    .disabled(entries.isEmpty)
                 }
                 
                 ToolbarItem(placement: .navigationBarTrailing) {
-                    Menu {
-                        Button(action: { showingShareSheet = true }) {
+                    if !isEditMode {
+                        Button {
+                            showingValidationTest = true
+                        } label: {
+                            Label("Test Algorithm", systemImage: "checkmark.seal.fill")
+                        }
+                        .disabled(entries.isEmpty)
+                    }
+                }
+                
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    if !isEditMode {
+                        Menu {
+                            Button(action: { showingShareSheet = true }) {
                             Label("Export Dataset", systemImage: "square.and.arrow.up")
                         }
                         
@@ -89,8 +142,9 @@ struct ValidationEntriesListView: View {
                         Button(action: loadEntries) {
                             Label("Refresh", systemImage: "arrow.clockwise")
                         }
-                    } label: {
-                        Image(systemName: "ellipsis.circle")
+                        } label: {
+                            Image(systemName: "ellipsis.circle")
+                        }
                     }
                 }
             }
@@ -134,6 +188,44 @@ struct ValidationEntriesListView: View {
             .sheet(isPresented: $showingValidationTest) {
                 ValidationTestView()
             }
+            .confirmationDialog(
+                "Delete Selected Entries",
+                isPresented: $showingDeleteSelectedConfirmation,
+                titleVisibility: .visible
+            ) {
+                Button("Delete \(selectedEntries.count) Entries", role: .destructive) {
+                    deleteSelectedEntries()
+                }
+                Button("Cancel", role: .cancel) { }
+            } message: {
+                Text("This will permanently delete \(selectedEntries.count) selected entries. This action cannot be undone.")
+            }
+        }
+    }
+    
+    private var sectionHeader: some View {
+        HStack {
+            Text("Total Entries: \(entries.count)")
+            if isEditMode && !entries.isEmpty {
+                Spacer()
+                Button(selectedEntries.count == entries.count ? "Deselect All" : "Select All") {
+                    if selectedEntries.count == entries.count {
+                        selectedEntries.removeAll()
+                    } else {
+                        selectedEntries = Set(entries.map { $0.id })
+                    }
+                }
+                .font(.caption)
+                .foregroundColor(.blue)
+            }
+        }
+    }
+    
+    private func toggleSelection(_ id: UUID) {
+        if selectedEntries.contains(id) {
+            selectedEntries.remove(id)
+        } else {
+            selectedEntries.insert(id)
         }
     }
     
@@ -172,12 +264,38 @@ struct ValidationEntriesListView: View {
         do {
             try ValidationDatasetManager.shared.clearAll()
             entries.removeAll()
-            alertMessage = "All \(entries.count) entries cleared successfully"
+            alertMessage = "All entries cleared successfully"
             showingAlert = true
         } catch {
             alertMessage = "Failed to clear entries: \(error.localizedDescription)"
             showingAlert = true
         }
+    }
+    
+    private func deleteSelectedEntries() {
+        let count = selectedEntries.count
+        var successCount = 0
+        var failCount = 0
+        
+        for entryId in selectedEntries {
+            do {
+                try ValidationDatasetManager.shared.deleteEntry(entryId)
+                entries.removeAll { $0.id == entryId }
+                successCount += 1
+            } catch {
+                failCount += 1
+            }
+        }
+        
+        selectedEntries.removeAll()
+        isEditMode = false
+        
+        if failCount == 0 {
+            alertMessage = "Successfully deleted \(successCount) entries"
+        } else {
+            alertMessage = "Deleted \(successCount) entries, failed to delete \(failCount) entries"
+        }
+        showingAlert = true
     }
 }
 

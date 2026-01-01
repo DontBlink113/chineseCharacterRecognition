@@ -14,12 +14,8 @@ struct FlashcardPracticeView: View {
     @State private var analysisResult: CharacterAnalysisResult? = nil
     @State private var showFeedback: Bool = false
     
-    // Tunable parameters
+    // Tunable parameters (baseline algorithm)
     @State private var showSettings: Bool = false
-    @State private var errorThreshold: Double = 0.5
-    @State private var distanceWeight: Double = 0.7
-    @State private var lengthWeight: Double = 0.3
-    @State private var temperature: Double = 0.1
     @State private var priorSigma: Double = 2.0
 
     private var selectedSet: LearningSet? {
@@ -405,17 +401,13 @@ struct FlashcardPracticeView: View {
     }
 
     private func finishCharacter() {
-        // Perform stroke analysis with tunable parameters
+        // Perform stroke analysis with baseline algorithm
         let userStrokes = viewModel.currentCharacter.strokes
         
         if !userStrokes.isEmpty && !currentCharacter.isEmpty {
             analysisResult = StrokeAnalyzer.analyzeCharacter(
                 userStrokes: userStrokes,
                 character: currentCharacter,
-                errorThreshold: errorThreshold,
-                distanceWeight: distanceWeight,
-                lengthWeight: lengthWeight,
-                temperature: temperature,
                 priorSigma: priorSigma
             )
             showFeedback = true
@@ -424,11 +416,11 @@ struct FlashcardPracticeView: View {
         viewModel.completeCurrentCharacter()
     }
     
-    // Settings panel view
+    // Settings panel view (baseline algorithm)
     private var settingsPanel: some View {
         VStack(alignment: .leading, spacing: 16) {
             HStack {
-                Text("Analysis Parameters")
+                Text("Algorithm Parameters")
                     .font(.headline)
                     .foregroundColor(Color("Blue 900"))
                 Spacer()
@@ -440,71 +432,15 @@ struct FlashcardPracticeView: View {
             }
             
             VStack(alignment: .leading, spacing: 12) {
-                // Error Threshold
-                VStack(alignment: .leading, spacing: 4) {
-                    HStack {
-                        Text("Error Threshold")
-                            .font(.subheadline)
-                        Spacer()
-                        Text(String(format: "%.2f", errorThreshold))
-                            .font(.subheadline.monospacedDigit())
-                            .foregroundColor(Color("Blue 700"))
-                    }
-                    Slider(value: $errorThreshold, in: 0.1...1.0, step: 0.05)
-                        .accentColor(Color("Blue 700"))
-                    Text("Lower = stricter matching")
-                        .font(.caption)
-                        .foregroundColor(Color("Neutral 700"))
-                }
+                Text("Baseline Algorithm")
+                    .font(.caption)
+                    .foregroundColor(Color("Neutral 700"))
+                Text("Fréchet distance + Optimal assignment")
+                    .font(.caption)
+                    .foregroundColor(Color("Neutral 700"))
+                    .italic()
                 
                 Divider()
-                
-                // Distance Weight
-                VStack(alignment: .leading, spacing: 4) {
-                    HStack {
-                        Text("Distance Weight")
-                            .font(.subheadline)
-                        Spacer()
-                        Text(String(format: "%.2f", distanceWeight))
-                            .font(.subheadline.monospacedDigit())
-                            .foregroundColor(Color("Blue 700"))
-                    }
-                    Slider(value: $distanceWeight, in: 0.0...1.0, step: 0.05)
-                        .accentColor(Color("Blue 700"))
-                }
-                
-                // Length Weight
-                VStack(alignment: .leading, spacing: 4) {
-                    HStack {
-                        Text("Length Weight")
-                            .font(.subheadline)
-                        Spacer()
-                        Text(String(format: "%.2f", lengthWeight))
-                            .font(.subheadline.monospacedDigit())
-                            .foregroundColor(Color("Blue 700"))
-                    }
-                    Slider(value: $lengthWeight, in: 0.0...1.0, step: 0.05)
-                        .accentColor(Color("Blue 700"))
-                }
-                
-                Divider()
-                
-                // Temperature
-                VStack(alignment: .leading, spacing: 4) {
-                    HStack {
-                        Text("Temperature")
-                            .font(.subheadline)
-                        Spacer()
-                        Text(String(format: "%.2f", temperature))
-                            .font(.subheadline.monospacedDigit())
-                            .foregroundColor(Color("Blue 700"))
-                    }
-                    Slider(value: $temperature, in: 0.01...0.5, step: 0.01)
-                        .accentColor(Color("Blue 700"))
-                    Text("Lower = sharper probability distribution")
-                        .font(.caption)
-                        .foregroundColor(Color("Neutral 700"))
-                }
                 
                 // Prior Sigma
                 VStack(alignment: .leading, spacing: 4) {
@@ -518,7 +454,7 @@ struct FlashcardPracticeView: View {
                     }
                     Slider(value: $priorSigma, in: 0.5...5.0, step: 0.5)
                         .accentColor(Color("Blue 700"))
-                    Text("Controls stroke order importance")
+                    Text("Controls stroke order importance (higher = more flexible)")
                         .font(.caption)
                         .foregroundColor(Color("Neutral 700"))
                 }
@@ -533,10 +469,6 @@ struct FlashcardPracticeView: View {
     }
     
     private func resetParameters() {
-        errorThreshold = 0.5
-        distanceWeight = 0.7
-        lengthWeight = 0.3
-        temperature = 0.1
         priorSigma = 2.0
     }
 
