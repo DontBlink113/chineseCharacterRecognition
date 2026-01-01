@@ -357,7 +357,7 @@ class StrokeAnalyzer {
     static func findOptimalAssignment(userStrokes: [Stroke], 
                                      referenceStrokes: [ReferenceStroke],
                                      priorSigma: Double = 2.0,
-                                     useUniformPrior: Bool = false) -> [Int?] {
+                                     useUniformPrior: Bool = true) -> [Int?] {
         let numUser = userStrokes.count
         let numRef = referenceStrokes.count
         
@@ -381,7 +381,7 @@ class StrokeAnalyzer {
                 // Calculate prior based on stroke order (or use uniform prior)
                 let prior: Double
                 if useUniformPrior {
-                    prior = 1.0 / Double(numRef)  // Uniform prior
+                    prior = 1.0 / Double(numRef)  // Uniform prior (no stroke order preference)
                 } else {
                     prior = calculatePrior(userStrokeIndex: userIdx, 
                                           referenceStrokeIndex: refIdx,
@@ -489,12 +489,12 @@ class StrokeAnalyzer {
     ///   - userStrokes: The strokes drawn by the user
     ///   - character: The target character
     ///   - priorSigma: Standard deviation for stroke order prior (default: 2.0)
-    ///   - useUniformPrior: If true, uses uniform prior instead of Gaussian (default: false)
+    ///   - useUniformPrior: If true, uses uniform prior instead of Gaussian (default: true for no stroke order preference)
     /// - Returns: Analysis result or nil if character not found
     static func analyzeCharacter(userStrokes: [Stroke], 
                                 character: String, 
                                 priorSigma: Double = 2.0,
-                                useUniformPrior: Bool = false) -> CharacterAnalysisResult? {
+                                useUniformPrior: Bool = true) -> CharacterAnalysisResult? {
         // Load graphics data
         let graphicsData = loadGraphicsData()
         
@@ -542,7 +542,7 @@ class StrokeAnalyzer {
                 let likelihood = exp(-frechetDist)
                 let prior: Double
                 if useUniformPrior {
-                    prior = 1.0 / Double(referenceStrokes.count)  // Uniform prior
+                    prior = 1.0 / Double(referenceStrokes.count)  // Uniform prior (no stroke order preference)
                 } else {
                     prior = calculatePrior(
                         userStrokeIndex: userIdx,
