@@ -2,7 +2,10 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+	<!-- Optional: Place your OpenAI API key here if you want to load from Info.plist -->
 	<key>OPENAI_API_KEY</key>
-	<string>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</string>
+	<string></string>
+	<key>UIUserInterfaceStyle</key>
+	<string>Light</string>
 </dict>
 </plist>

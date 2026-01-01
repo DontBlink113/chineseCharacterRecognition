@@ -1,7 +1,8 @@
 import SwiftUI
 
-struct StrokeTestView: View {
+struct SentencePracticeView: View {
     @StateObject private var viewModel = DrawingViewModel()
+    @EnvironmentObject var store: LearningSetsStore
     @State private var showInfo = false
     @State private var showingCharacterData = false
     @State private var selectedCharacter: CharacterDrawing?
@@ -13,7 +14,7 @@ struct StrokeTestView: View {
     @State private var inputError: String?
     @State private var isPanelVisible: Bool = true
     @State private var bestMatchCost: Double? = nil
-    private let analyzer = CharacterAnalyzer.shared
+    private let analyzer = CharacterAnalyzer.shared //instance of the analyzer
 
     @AppStorage("learningCharacters") private var learningCharsInput: String = ""
     @State private var showLearningInput = false
@@ -21,7 +22,8 @@ struct StrokeTestView: View {
     @State private var learningInputError: String?
 
     private var learningCandidateKeys: [String] {
-        extractHanzi(from: learningCharsInput)
+        let src = store.activeSet?.characters ?? learningCharsInput
+        return extractHanzi(from: src)
     }
 
     @State private var generatedSentence: GeneratedSentence? = nil
@@ -37,7 +39,7 @@ struct StrokeTestView: View {
     @State private var comparisonError: String? = nil
     @State private var comparisonInterpreted: String? = nil
     @State private var isPreparingComparison: Bool = false
-    @State private var lastWrittenSentence: [CharacterDrawing] = []
+    @State private var lastWrittenSentence: [CharacterDrawing] = [] //CharacterDrawing contains the written data
 
 
     //This array contains the completed characters
@@ -48,17 +50,17 @@ struct StrokeTestView: View {
         }
         return characters
     }
-    
+
     var body: some View {
         VStack(spacing: 0) {
             // Drawing Canvas
             ZStack {
                 Color.white
                 
-                // Draw all completed characters
+                // Draw all completed characters 
                 ForEach(viewModel.characters) { character in
                     CharacterView(character: character)
-                }
+                } 
                 
                 // Draw current character
                 CharacterView(character: viewModel.currentCharacter)
@@ -86,6 +88,7 @@ struct StrokeTestView: View {
                     )
                 }
             }
+            //Drag recognition
             .gesture(
                 DragGesture(minimumDistance: 0)
                     .onChanged { value in
@@ -100,6 +103,7 @@ struct StrokeTestView: View {
                         viewModel.endStroke()
                     }
             )
+            //Expand gesture zone to full view
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             
             // Controls
@@ -274,14 +278,9 @@ struct StrokeTestView: View {
                 }
                 .padding(.horizontal)
                 
-                // Removed: Show Specific Character and sheet
 
-                Button(action: {
-                    learningCharsDraft = learningCharsInput
-                    learningInputError = nil
-                    showLearningInput = true
-                }) {
-                    Text("Set Learning Characters")
+                NavigationLink(destination: CharacterSetsView()) {
+                    Text("Manage Learning Sets")
                         .font(.headline)
                         .foregroundColor(.white)
                         .padding()
@@ -291,52 +290,16 @@ struct StrokeTestView: View {
                 }
                 .padding(.horizontal)
                 .sheet(isPresented: $showLearningInput) {
-                    NavigationView {
-                        VStack(spacing: 16) {
-                            Text("Enter characters you are learning")
-                                .font(.headline)
-                            TextEditor(text: $learningCharsDraft)
-                                .frame(minHeight: 120)
-                                .overlay(
-                                    RoundedRectangle(cornerRadius: 8)
-                                        .stroke(Color.secondary.opacity(0.3), lineWidth: 1)
-                                )
-                                .padding(.horizontal)
-                            if let err = learningInputError {
-                                Text(err)
-                                    .foregroundColor(.red)
-                                    .font(.footnote)
-                            }
-                            HStack {
-                                Button("Cancel") {
-                                    showLearningInput = false
-                                }
-                                Spacer()
-                                Button("Save") {
-                                    let extracted = extractHanzi(from: learningCharsDraft)
-                                    if extracted.isEmpty {
-                                        learningInputError = "Please enter Chinese characters only."
-                                    } else {
-                                        learningCharsInput = extracted.joined()
-                                        showLearningInput = false
-                                    }
-                                }
-                            }
-                            .padding(.horizontal)
-                            Spacer()
-                        }
-                        .padding()
-                    }
+                    NavigationView { CharacterSetsView() }
                 }
                 HStack {
-                    Text("Learning set: \(learningCandidateKeys.count) chars")
+                    let name = store.activeSet?.name ?? "None"
+                    Text("Active set: \(name) • \(learningCandidateKeys.count) chars")
                         .font(.caption)
                         .foregroundColor(.secondary)
                     Spacer()
-                    Button("Clear") {
-                        learningCharsInput = ""
-                    }
-                    .font(.caption)
+                    NavigationLink("Manage", destination: CharacterSetsView())
+                        .font(.caption)
                 }
                 .padding(.horizontal)
                 
@@ -375,10 +338,16 @@ struct StrokeTestView: View {
         }
     }
 
+    //Need a description of inMass, decay, and gamma
+    /*
+    This function uses a primary search and secondary fallback search:
+    1) try sentence level matching (includes dependencies)
+    2) if no match, try character level matching
+    */
     private func interpretWritten(from drawings: [CharacterDrawing]) -> String {
         let keys = learningCandidateKeys
         if !comparisonChineseTarget.isEmpty {
-            let res = analyzer.bestSentenceByGlobalReuse(
+            let res = analyzer.bestSentenceByGlobalReuse( //get most likely sentence
                 written: drawings,
                 intended: comparisonChineseTarget,
                 candidateKeys: keys.isEmpty ? nil : keys,
@@ -408,6 +377,7 @@ struct StrokeTestView: View {
     }
 }
 
+//Extracts all chinese characters from a string
 private func extractHanzi(from text: String) -> [String] {
     var seen = Set<String>()
     var result: [String] = []
@@ -425,7 +395,6 @@ private func extractHanzi(from text: String) -> [String] {
 }
 
 // MARK: - Intended Overlay Views/Helpers
-
 private struct IntendedOverlayView: View {
     let written: [CharacterDrawing]
     let intended: String
@@ -594,17 +563,55 @@ private extension Array {
     }
 }
 
+//Draw stroke based on smooth curves between points.
 private struct StrokeView: Shape {
     let stroke: Stroke
     
     func path(in rect: CGRect) -> Path {
         var path = Path()
-        guard let firstPoint = stroke.points.first else { return path }
+        let points = stroke.displayPoints.map { $0.location }
+        guard points.count > 0 else { return path }
         
-        path.move(to: firstPoint.location)
+        if points.count == 1 {
+            // Single point - draw a small circle
+            path.addEllipse(in: CGRect(x: points[0].x - 2, y: points[0].y - 2, width: 4, height: 4))
+            return path
+        }
         
-        for point in stroke.points.dropFirst() {
-            path.addLine(to: point.location)
+        if points.count == 2 {
+            // Two points - draw a line
+            path.move(to: points[0])
+            path.addLine(to: points[1])
+            return path
+        }
+        
+        // Three or more points - use smooth curves
+        path.move(to: points[0])
+        
+        // Use quadratic curves for smoothing
+        for i in 1..<points.count {
+            let current = points[i]
+            let previous = points[i - 1]
+            
+            // Calculate midpoint for smooth curve
+            let midPoint = CGPoint(
+                x: (previous.x + current.x) / 2,
+                y: (previous.y + current.y) / 2
+            )
+            
+            if i == 1 {
+                // First segment - curve from start to midpoint
+                path.addQuadCurve(to: midPoint, control: previous)
+            } else {
+                // Subsequent segments - curve to midpoint using previous point as control
+                path.addQuadCurve(to: midPoint, control: previous)
+            }
+        }
+        
+        // Final segment to last point
+        if let last = points.last, points.count > 1 {
+            let secondLast = points[points.count - 2]
+            path.addQuadCurve(to: last, control: secondLast)
         }
         
         return path
@@ -754,6 +761,7 @@ private struct RightSidePanel: View {
     }
 }
 
+//Used for testing to display information about a character from the dataset.
 private struct DatasetCharacterPanel: View {
     let character: Character
     let matchCost: Double?
@@ -825,8 +833,11 @@ private struct DatasetCharacterPanel: View {
 
 // MARK: - Preview
 
-struct StrokeTestView_Previews: PreviewProvider {
+struct SentencePracticeView_Previews: PreviewProvider {
     static var previews: some View {
-        StrokeTestView()
+        NavigationStack {
+            SentencePracticeView()
+        }
+        .environmentObject(LearningSetsStore())
     }
 }

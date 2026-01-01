@@ -12,11 +12,11 @@ struct Chinese_Language_Character_WriterApp: App {
     var body: some Scene {
         WindowGroup {
             NavigationStack {
-                StrokeTestView()
-                    .navigationTitle("Chinese Character Autograder")
-                    .navigationBarTitleDisplayMode(.inline)
+                HomeView()
             }
+            .environmentObject(LearningSetsStore())
             .navigationViewStyle(.stack) // This ensures a standard navigation stack on all devices
+            .preferredColorScheme(.light)
         }
     }
 }

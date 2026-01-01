@@ -18,6 +18,8 @@ final class OpenAISentenceGenerator {
     private let model = "gpt-4o-mini"
     private let session: URLSession
 
+    // Initializes the generator. Uses the provided API key if given, otherwise reads `OPENAI_API_KEY` from Info.plist.
+    // Throws `missingAPIKey` if none is found. Configures a URLSession with timeouts and connectivity waits.
     init(apiKey: String? = nil) throws {
         if let k = apiKey, !k.isEmpty {
             self.apiKey = k
@@ -33,6 +35,13 @@ final class OpenAISentenceGenerator {
         self.session = URLSession(configuration: cfg)
     }
 
+    // Generates a sentence strictly from `allowed` characters, with validation and retries.
+    // - Parameters:
+    //   - allowed: Array of allowed characters; duplicates are removed before sending.
+    //   - retries: Number of validation retries if output contains disallowed characters.
+    //   - networkRetries: Number of network-level retries per request attempt.
+    // - Throws: `emptyAllowedSet`, `validationFailed`, or underlying networking/decoding errors.
+    // - Returns: A `GeneratedSentence` containing Chinese text and English gloss.
     func generate(allowed: [String], retries: Int = 1, networkRetries: Int = 3) async throws -> GeneratedSentence {
         let unique = Array(Set(allowed)).joined()
         if unique.isEmpty { throw SentenceGenError.emptyAllowedSet }
@@ -47,6 +56,13 @@ final class OpenAISentenceGenerator {
         throw SentenceGenError.validationFailed
     }
 
+    // Performs a request with exponential backoff for transient network errors.
+    // - Parameters:   
+    //   - allowed: Flattened allowed-characters string passed to the request.
+    //   - correction: Previous invalid result (if any) to adjust the system prompt.
+    //   - networkRetries: Max number of retry attempts on network failures.
+    // - Throws: The last encountered error after exhausting retries.
+    // - Returns: A `GeneratedSentence` on success.
     private func requestWithRetry(allowed: String, correction: GeneratedSentence?, networkRetries: Int) async throws -> GeneratedSentence {
         var lastError: Error? = nil
         for attempt in 0...max(0, networkRetries) {
@@ -77,6 +93,13 @@ final class OpenAISentenceGenerator {
         throw lastError ?? SentenceGenError.invalidResponse
     }
 
+    // Issues the OpenAI chat-completions call and parses a JSON-only response.
+    // Adds a corrective system note when prior output contained disallowed characters.
+    // - Parameters:
+    //   - allowed: Allowed character set string.
+    //   - correction: Previous invalid `GeneratedSentence` used to tighten instructions.
+    // - Throws: `invalidResponse` for non-2xx or malformed payload; network/decoding errors otherwise.
+    // - Returns: The parsed `GeneratedSentence`.
     private func request(allowed: String, correction: GeneratedSentence?) async throws -> GeneratedSentence {
         var sys = "You are a Chinese language teacher. Generate exactly one short Chinese sentence using ONLY the characters from the allowed set. Do not use any other Chinese characters. Punctuation should be omitted unless it is within the allowed set. Respond ONLY as compact JSON: {\"chinese\": \"...\", \"english\": \"...\"}."
         if correction != nil {
@@ -126,11 +149,15 @@ final class OpenAISentenceGenerator {
     }
 }
 
+// Returns true if the Unicode scalar is within common CJK ranges (Hanzi/CJK ideographs).
+// Hanzi refers to Chinese characters used in the Chinese writing system.
 private func isCJK(_ scalar: Unicode.Scalar) -> Bool {
     let v = scalar.value
     return (0x4E00...0x9FFF).contains(v) || (0x3400...0x4DBF).contains(v) || (0xF900...0xFAFF).contains(v)
 }
 
+/// Returns unique Chinese characters in `text` that are not present in `allowed`.
+/// Preserves first-seen order and ignores non-CJK scalars.
 private func disallowedChinese(in text: String, allowed: Set<String>) -> [String] {
     var bad: [String] = []
     var seen = Set<String>()

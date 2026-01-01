@@ -40,7 +40,8 @@ struct StrokePoint: Equatable {
 /// Represents a single stroke from touch down to lift
 struct Stroke: Identifiable, Equatable {
     let id: UUID
-    var points: [StrokePoint]
+    var points: [StrokePoint] // Filtered points for analysis
+    var displayPoints: [StrokePoint] // All points for smooth rendering
     var startTime: TimeInterval
     var endTime: TimeInterval
     private(set) var substrokes: [Substroke] = []
@@ -237,22 +238,29 @@ struct Stroke: Identifiable, Equatable {
         return endTime - startTime
     }
     
-    init(id: UUID = UUID(), points: [StrokePoint] = []) {
+    init(id: UUID = UUID(), points: [StrokePoint] = [], displayPoints: [StrokePoint]? = nil) {
         self.id = id
         self.points = points
+        self.displayPoints = displayPoints ?? points
         self.startTime = points.first?.timestamp ?? Date().timeIntervalSince1970
         self.endTime = points.last?.timestamp ?? Date().timeIntervalSince1970
     }
     
-    /// Adds a new point to the stroke
+    /// Adds a new point to the stroke (for analysis)
     mutating func addPoint(_ point: StrokePoint) {
         points.append(point)
         endTime = point.timestamp
         if points.count == 1 {
             startTime = point.timestamp
         }
-        // No substroke detection during drawing - deferred to endStroke()
     }
+    
+    /// Adds a new display point to the stroke (for rendering)
+    mutating func addDisplayPoint(_ point: StrokePoint) {
+        displayPoints.append(point)
+    }
+    
+    // No substroke detection during drawing - deferred to endStroke()
 }
 
 /// Represents a complete character composed of multiple strokes
@@ -438,7 +446,11 @@ class DrawingViewModel: ObservableObject {
         let now = Date().timeIntervalSince1970
         let timeSinceLastPoint = now - lastPointTime
         
-        // Check if enough time has passed and point is far enough from last point
+        // Always add to display points for smooth rendering
+        let displayPoint = StrokePoint(location: location, timestamp: now)
+        stroke.addDisplayPoint(displayPoint)
+        
+        // Check if enough time has passed and point is far enough from last point for analysis
         if timeSinceLastPoint >= minimumTimeInterval,
            let lastLocation = lastPoint,
            distanceSquared(from: lastLocation, to: location) >= minimumDistanceSquared {
@@ -448,8 +460,9 @@ class DrawingViewModel: ObservableObject {
             
             let point = StrokePoint(location: location, timestamp: now)
             stroke.addPoint(point)
-            currentStroke = stroke
         }
+        
+        currentStroke = stroke
     }
     
     /// Calculate squared distance between two points (more efficient than calculating actual distance)
