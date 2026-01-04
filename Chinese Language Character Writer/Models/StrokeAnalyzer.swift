@@ -10,9 +10,10 @@ struct ReferenceCharacter: Codable {
     let medians: [[[Double]]]
 }
 
-/// A parsed reference stroke with its median points
+/// A parsed reference stroke with its median points and normalized SVG path
 struct ReferenceStroke {
     let medianPoints: [CGPoint]
+    let svgPath: String  // Normalized to [0,1] using same transform as medians
     
     /// Calculate the length of the stroke based on the sum of segment lengths
     var length: CGFloat {
@@ -119,7 +120,7 @@ class StrokeAnalyzer {
     /// Normalize coordinates from graphics.txt format to match user stroke coordinate system
     /// Graphics.txt uses a coordinate system where Y-axis is flipped
     /// Normalize to square [0,1] space preserving aspect ratio
-    static func normalizeReferenceStrokes(_ medians: [[[Double]]]) -> [ReferenceStroke] {
+    static func normalizeReferenceStrokes(_ medians: [[[Double]]], svgPaths: [String]) -> [ReferenceStroke] {
         // First, collect all points to find bounding box
         var allPoints: [CGPoint] = []
         for median in medians {
@@ -149,7 +150,7 @@ class StrokeAnalyzer {
         
         // Normalize each stroke
         var referenceStrokes: [ReferenceStroke] = []
-        for median in medians {
+        for (index, median) in medians.enumerated() {
             var normalizedPoints: [CGPoint] = []
             for point in median {
                 guard point.count >= 2 else { continue }
@@ -158,29 +159,139 @@ class StrokeAnalyzer {
                 let y = 1.0 - (CGFloat(point[1]) - minY + offsetY) / scale
                 normalizedPoints.append(CGPoint(x: x, y: y))
             }
-            referenceStrokes.append(ReferenceStroke(medianPoints: normalizedPoints))
+            
+            // Get corresponding SVG path or empty string if index out of bounds
+            let rawPath = index < svgPaths.count ? svgPaths[index] : ""
+            let normalizedPath = normalizeSVGPathString(
+                rawPath,
+                minX: minX,
+                minY: minY,
+                scale: scale,
+                offsetX: offsetX,
+                offsetY: offsetY,
+                flipY: true
+            )
+            
+            referenceStrokes.append(ReferenceStroke(medianPoints: normalizedPoints, svgPath: normalizedPath))
         }
         
         return referenceStrokes
     }
+
+    /// Normalize an SVG path string using the same transform as medians
+    /// Supported commands: M, L, Q, C, Z (absolute)
+    private static func normalizeSVGPathString(_ path: String,
+                                               minX: CGFloat,
+                                               minY: CGFloat,
+                                               scale: CGFloat,
+                                               offsetX: CGFloat,
+                                               offsetY: CGFloat,
+                                               flipY: Bool) -> String {
+        guard !path.isEmpty else { return path }
+        let parts = path.split(separator: " ")
+        var i = 0
+        var out: [String] = []
+        func tx(_ x: Double, _ y: Double) -> (Double, Double) {
+            let nx = (CGFloat(x) - minX + offsetX) / scale
+            let ny0 = (CGFloat(y) - minY + offsetY) / scale
+            let ny = flipY ? (1.0 - ny0) : ny0
+            return (Double(nx), Double(ny))
+        }
+        func fmt(_ v: Double) -> String {
+            // Limit to 6 decimal places to keep path compact
+            return String(format: "%.6f", v).replacingOccurrences(of: "-0.000000", with: "0")
+        }
+        while i < parts.count {
+            let cmd = String(parts[i])
+            switch cmd {
+            case "M":
+                if i + 2 < parts.count, let x = Double(parts[i+1]), let y = Double(parts[i+2]) {
+                    let (ux, uy) = tx(x, y)
+                    out.append("M")
+                    out.append(fmt(ux))
+                    out.append(fmt(uy))
+                    i += 3
+                } else { out.append(cmd); i += 1 }
+            case "L":
+                if i + 2 < parts.count, let x = Double(parts[i+1]), let y = Double(parts[i+2]) {
+                    let (ux, uy) = tx(x, y)
+                    out.append("L")
+                    out.append(fmt(ux))
+                    out.append(fmt(uy))
+                    i += 3
+                } else { out.append(cmd); i += 1 }
+            case "Q":
+                if i + 4 < parts.count,
+                   let x1 = Double(parts[i+1]), let y1 = Double(parts[i+2]),
+                   let x = Double(parts[i+3]), let y = Double(parts[i+4]) {
+                    let (ux1, uy1) = tx(x1, y1)
+                    let (ux, uy) = tx(x, y)
+                    out.append("Q")
+                    out.append(fmt(ux1))
+                    out.append(fmt(uy1))
+                    out.append(fmt(ux))
+                    out.append(fmt(uy))
+                    i += 5
+                } else { out.append(cmd); i += 1 }
+            case "C":
+                if i + 6 < parts.count,
+                   let x1 = Double(parts[i+1]), let y1 = Double(parts[i+2]),
+                   let x2 = Double(parts[i+3]), let y2 = Double(parts[i+4]),
+                   let x = Double(parts[i+5]), let y = Double(parts[i+6]) {
+                    let (ux1, uy1) = tx(x1, y1)
+                    let (ux2, uy2) = tx(x2, y2)
+                    let (ux, uy) = tx(x, y)
+                    out.append("C")
+                    out.append(fmt(ux1))
+                    out.append(fmt(uy1))
+                    out.append(fmt(ux2))
+                    out.append(fmt(uy2))
+                    out.append(fmt(ux))
+                    out.append(fmt(uy))
+                    i += 7
+                } else { out.append(cmd); i += 1 }
+            case "Z":
+                out.append("Z")
+                i += 1
+            default:
+                // Unknown or stray token; copy verbatim
+                out.append(cmd)
+                i += 1
+            }
+        }
+        return out.joined(separator: " ")
+    }
     
     /// Normalize user strokes to 0-1 range based on character bounding box
     /// Preserves aspect ratio by using square normalization
-    static func normalizeUserStrokes(_ strokes: [Stroke]) -> [Stroke] {
+    static func normalizeUserStrokes(_ strokes: [Stroke], boundingBox: CGRect? = nil) -> [Stroke] {
         guard !strokes.isEmpty else { return [] }
         
-        // Find bounding box of all strokes
-        var allPoints: [CGPoint] = []
-        for stroke in strokes {
-            allPoints.append(contentsOf: stroke.points.map { $0.location })
+        let minX: CGFloat
+        let maxX: CGFloat
+        let minY: CGFloat
+        let maxY: CGFloat
+        
+        if let bbox = boundingBox {
+            // Use provided bounding box
+            minX = bbox.minX
+            maxX = bbox.maxX
+            minY = bbox.minY
+            maxY = bbox.maxY
+        } else {
+            // Find bounding box of all strokes
+            var allPoints: [CGPoint] = []
+            for stroke in strokes {
+                allPoints.append(contentsOf: stroke.points.map { $0.location })
+            }
+            
+            guard !allPoints.isEmpty else { return [] }
+            
+            minX = allPoints.map { $0.x }.min() ?? 0
+            maxX = allPoints.map { $0.x }.max() ?? 1
+            minY = allPoints.map { $0.y }.min() ?? 0
+            maxY = allPoints.map { $0.y }.max() ?? 1
         }
-        
-        guard !allPoints.isEmpty else { return [] }
-        
-        let minX = allPoints.map { $0.x }.min() ?? 0
-        let maxX = allPoints.map { $0.x }.max() ?? 1
-        let minY = allPoints.map { $0.y }.min() ?? 0
-        let maxY = allPoints.map { $0.y }.max() ?? 1
         
         let width = max(maxX - minX, 1)
         let height = max(maxY - minY, 1)
@@ -490,11 +601,13 @@ class StrokeAnalyzer {
     ///   - character: The target character
     ///   - priorSigma: Standard deviation for stroke order prior (default: 2.0)
     ///   - useUniformPrior: If true, uses uniform prior instead of Gaussian (default: true for no stroke order preference)
+    ///   - boundingBox: Optional bounding box to use for normalization (if nil, uses stroke bounds)
     /// - Returns: Analysis result or nil if character not found
     static func analyzeCharacter(userStrokes: [Stroke], 
                                 character: String, 
                                 priorSigma: Double = 2.0,
-                                useUniformPrior: Bool = true) -> CharacterAnalysisResult? {
+                                useUniformPrior: Bool = true,
+                                boundingBox: CGRect? = nil) -> CharacterAnalysisResult? {
         // Load graphics data
         let graphicsData = loadGraphicsData()
         
@@ -504,15 +617,15 @@ class StrokeAnalyzer {
         }
         
         // Parse reference strokes
-        let referenceStrokes = normalizeReferenceStrokes(refChar.medians)
+        let referenceStrokes = normalizeReferenceStrokes(refChar.medians, svgPaths: refChar.strokes)
         
         guard !referenceStrokes.isEmpty else {
             print("No reference strokes found")
             return nil
         }
         
-        // Normalize user strokes
-        let normalizedUserStrokes = normalizeUserStrokes(userStrokes)
+        // Normalize user strokes with optional bounding box
+        let normalizedUserStrokes = normalizeUserStrokes(userStrokes, boundingBox: boundingBox)
         
         // Use optimal assignment algorithm (baseline)
         let assignments = findOptimalAssignment(

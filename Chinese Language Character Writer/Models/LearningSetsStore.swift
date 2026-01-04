@@ -1,6 +1,11 @@
+
+
+
 import Foundation
 import SwiftUI
 
+
+//Struct for a learning set, including an ID, name, characters, and an optional list of flashcards
 struct LearningSet: Identifiable, Codable, Equatable {
     let id: UUID
     var name: String
@@ -20,6 +25,7 @@ struct LearningSet: Identifiable, Codable, Equatable {
         return items.contains { !$0.definition.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
     }
 }
+
 
 final class LearningSetsStore: ObservableObject {
     @Published private(set) var sets: [LearningSet] = [] {
