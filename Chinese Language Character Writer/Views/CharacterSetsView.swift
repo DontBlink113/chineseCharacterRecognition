@@ -4,6 +4,8 @@ struct CharacterSetsView: View {
     @EnvironmentObject var store: LearningSetsStore
     @State private var name: String = ""
     @State private var characters: String = ""
+    @State private var showAddSetError: Bool = false
+    @State private var addSetErrorMessage: String = ""
 
     var body: some View {
         ZStack {
@@ -13,11 +15,10 @@ struct CharacterSetsView: View {
             ScrollView {
                 VStack(spacing: 24) {
                     // Title
-                    Text("Learning Sets")
+                    Text("Character Sets")
                         .font(.system(size: 40)).bold()
                         .foregroundColor(Color("Blue 900"))
                         .padding(.top, 20)
-                    
                     // Add New Set Card
                     VStack(alignment: .leading, spacing: 16) {
                         Text("Add New Set")
@@ -47,7 +48,14 @@ struct CharacterSetsView: View {
                         
                         Button(action: {
                             guard !name.isEmpty && !characters.isEmpty else { return }
-                            store.add(name: name, characters: characters)
+                            let hanzi = extractHanzi(from: characters)
+                            if hanzi.isEmpty {
+                                addSetErrorMessage = "No Chinese characters found. Please enter at least one Chinese character."
+                                showAddSetError = true
+                                return
+                            }
+                            let filtered = hanzi.joined()
+                            store.add(name: name, characters: filtered)
                             name = ""
                             characters = ""
                         }) {
@@ -135,11 +143,11 @@ struct CharacterSetsView: View {
                                     }
                                     .padding(16)
                                     
-                                    // Add Definitions button
+                                    // Edit Character List button
                                     NavigationLink(destination: AddDefinitionsView(setId: set.id)) {
                                         HStack {
-                                            Image(systemName: set.hasDefinitions ? "pencil" : "plus.circle")
-                                            Text(set.hasDefinitions ? "Edit Definitions" : "Add Definitions")
+                                            Image(systemName: "pencil")
+                                            Text("Edit List")
                                         }
                                         .font(.subheadline)
                                         .foregroundColor(Color("Blue 700"))
@@ -167,6 +175,13 @@ struct CharacterSetsView: View {
                     Spacer(minLength: 40)
                 }
             }
+        }
+        .alert(isPresented: $showAddSetError) {
+            Alert(
+                title: Text("Invalid Characters"),
+                message: Text(addSetErrorMessage),
+                dismissButton: .default(Text("OK"))
+            )
         }
         .navigationBarTitleDisplayMode(.inline)
     }

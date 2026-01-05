@@ -1,0 +1,32 @@
+This application includes third-party data licensed under open-source licenses.
+
+----------------------------------------
+dictionary.txt
+----------------------------------------
+Derived from:
+- Unihan Database (https://unicode.org/charts/unihan.html)
+- CJKlib (https://github.com/cburgmer/cjklib)
+
+License:
+GNU Lesser General Public License v3.0 (LGPL-3.0)
+
+You may redistribute and/or modify this data under the terms of the GNU
+Lesser General Public License as published by the Free Software Foundation,
+either version 3 of the License, or (at your option) any later version.
+
+A copy of the license is provided in this application.
+
+----------------------------------------
+graphics.txt
+----------------------------------------
+Derived from:
+- Arphic PL KaitiM GB
+- Arphic PL UKai
+
+License:
+Arphic Public License
+
+You may redistribute and/or modify this data under the terms of the Arphic
+Public License as published by Arphic Technology Co., Ltd.
+
+A copy of the license is provided in this application.

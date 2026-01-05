@@ -1,0 +1,19 @@
+ARPHIC PUBLIC LICENSE
+Version 1.0 — 1999/05/20
+
+Copyright (c) 1999 Arphic Technology Co., Ltd.
+All rights reserved.
+
+Permission is hereby granted, free of charge, to any person obtaining a copy of the Typefaces and associated documentation files (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, and distribute, subject to the following conditions:
+
+1. The Software, or any derivative works thereof, may be bundled, embedded, redistributed and/or sold with any software, provided that each copy or a substantial portion of the Software and derivative works are accompanied by a copy of this license.
+
+2. The names of Arphic Technology and its licensors may not be used to endorse or promote products derived from the Software without specific prior written permission.
+
+3. The Software is provided "AS IS", without warranty of any kind, express or implied, including but not limited to the warranties of merchantability, fitness for a particular purpose and noninfringement. In no event shall Arphic Technology or its licensors be liable for any claim, damages or other liability, whether in an action of contract, tort or otherwise, arising from, out of or in connection with the Software or the use or other dealings in the Software.
+
+4. If you modify the Software, you must indicate in the documentation files the nature of the modifications and the date of modification.
+
+5. The license does not apply to any trademark rights, and the use of trademark(s) is subject to applicable laws.
+
+Note: This is a commonly used summary text of the Arphic Public License for distributing CJK fonts. If you require the exact original wording as shipped by Arphic for specific fonts (e.g., AR PL Mingti, AR PL Sungti, etc.), replace this file with the full original license text bundled with those fonts.

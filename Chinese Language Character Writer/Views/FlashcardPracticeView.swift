@@ -5,6 +5,7 @@ import QuartzCore
 struct FlashcardPracticeView: View {
     @EnvironmentObject var store: LearningSetsStore
     @StateObject private var viewModel = DrawingViewModel()
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
 
     @State private var selectedSetId: UUID? = nil
     @State private var shuffle: Bool = false
@@ -23,13 +24,15 @@ struct FlashcardPracticeView: View {
     @State private var showSettings: Bool = false
     @AppStorage("boundingBoxSize") private var boundingBoxSize: Double = 0.8  // Persisted size of guide box
     @AppStorage("secondsPerStroke") private var secondsPerStroke: Double = 0.6  // Persisted animation speed
-    @AppStorage("showTopProbs") private var showTopProbs: Bool = false  // Debug overlay toggle
     @AppStorage("errorThreshold") private var errorThreshold: Double = 0.35  // Sensitivity (Fréchet error threshold)
     @State private var replayNonce: Int = 0  // Changing this replays the animation
     @State private var perfectStreakCount: Int = 0
     @State private var sessionAttempted: Set<Int> = []
     @State private var sessionPerfectCount: Int = 0
     @State private var showCongrats: Bool = false
+    @State private var snapshotUserStrokes: [Stroke] = []
+    @State private var snapshotBoundingBox: CGRect? = nil
+    @State private var prevStreakBeforeFinish: Int = 0
 
     private var selectedSet: LearningSet? {
         if let id = selectedSetId { return store.sets.first { $0.id == id } }
@@ -93,6 +96,21 @@ struct FlashcardPracticeView: View {
                     .foregroundColor(Color("Neutral 700"))
             }
         }
+    }
+    
+    private var crosshairOverlay: some View {
+        GeometryReader { geometry in
+            let w = geometry.size.width
+            let h = geometry.size.height
+            Path { path in
+                path.move(to: CGPoint(x: 0, y: h / 2))
+                path.addLine(to: CGPoint(x: w, y: h / 2))
+                path.move(to: CGPoint(x: w / 2, y: 0))
+                path.addLine(to: CGPoint(x: w / 2, y: h))
+            }
+            .stroke(Color("Blue 700").opacity(0.2), style: StrokeStyle(lineWidth: 1, dash: [5, 5]))
+        }
+        .allowsHitTesting(false)
     }
     
     private var shuffleToggle: some View {
@@ -160,9 +178,9 @@ struct FlashcardPracticeView: View {
             ScrollView {
                 VStack(spacing: 24) {
                     Text("Flashcard Practice")
-                        .font(.system(size: 40)).bold()
+                        .font(.system(size: horizontalSizeClass == .compact ? 28 : 40)).bold()
                         .foregroundColor(Color("Blue 900"))
-                        .padding(.top, 20)
+                        .padding(.top, horizontalSizeClass == .compact ? 8 : 20)
                     
                     setupCard
                     
@@ -218,10 +236,11 @@ struct FlashcardPracticeView: View {
                         // Definition prompt - centered
                         VStack(spacing: 8) {
                             Text(currentPrompt)
-                                .font(.system(size: 24, weight: .medium))
+                                .font(.system(size: horizontalSizeClass == .compact ? 18 : 24, weight: .medium))
                                 .foregroundColor(Color("Blue 900"))
                                 .multilineTextAlignment(.center)
-                                .lineLimit(3)
+                                .lineLimit(horizontalSizeClass == .compact ? 4 : 3)
+                                .minimumScaleFactor(0.7)
                         }
                         .padding(.horizontal, 16)
                         
@@ -234,8 +253,8 @@ struct FlashcardPracticeView: View {
                         Color.clear
                             .frame(width: 44, height: 44)
                     }
-                    .padding(.horizontal, 24)
-                    .padding(.vertical, 16)
+                    .padding(.horizontal, horizontalSizeClass == .compact ? 16 : 24)
+                    .padding(.vertical, horizontalSizeClass == .compact ? 12 : 16)
                     .background(Color(red: 0.68, green: 0.85, blue: 0.9).opacity(0.3))
                     
                     // Settings shown in a separate sheet now; no inline panel here
@@ -267,116 +286,215 @@ struct FlashcardPracticeView: View {
                                     .transition(.move(edge: .top).combined(with: .opacity))
                             }
                             
-                            Spacer()
-                            
-                            // Side-by-side comparison view
-                            HStack(spacing: 16) {
-                                // Left: User's color-coded strokes
-                                VStack(spacing: 8) {
-                                    Text("Your Drawing")
-                                        .font(.headline)
-                                        .foregroundColor(Color("Blue 900"))
-                                    
-                                    ZStack {
-                                        Color.white
-                                        
-                                        coloredFeedbackCanvas
-                                    }
-                                    .aspectRatio(1.0, contentMode: .fit)
-                                    .cornerRadius(12)
-                                    .overlay(
-                                        RoundedRectangle(cornerRadius: 12)
-                                            .stroke(Color("Blue 700"), lineWidth: 2)
-                                    )
-                                }
-                                
-                                // Right: Animated true character (mask-based reveal)
-                                VStack(spacing: 8) {
-                                    Text("True Character")
-                                        .font(.headline)
-                                        .foregroundColor(Color("Blue 900"))
-                                    
-                                    ZStack {
-                                        Color.white
-                                        
-                                        // Hybrid animation: user's correct strokes + reference for misses
-                                        GeometryReader { geo in
-                                            if let result = analysisResult {
-                                                // Quantize size to reduce layout-churn replays on settings toggle
-                                                let size = floor(min(geo.size.width, geo.size.height) / 8.0) * 8.0
-                                                let duration = max(0.1, Double(result.referenceStrokes.count) * secondsPerStroke)
-                                                ReferenceStrokeMaskAnimationView(
-                                                    referenceStrokes: result.referenceStrokes,
-                                                    userStrokes: result.userStrokes,
-                                                    strokeResults: result.strokeResults,
-                                                    originalCanvasSize: canvasSize,
-                                                    boundingBox: currentBoundingBox,
-                                                    canvasSize: size,
-                                                    totalDuration: duration,
-                                                    replayNonce: replayNonce,
-                                                    pause: showSettings
+                            if horizontalSizeClass == .compact {
+                                ScrollView {
+                                    Group {
+                                        let tile = min(UIScreen.main.bounds.width - 48, 400)
+                                        VStack(spacing: 20) {
+                                            VStack(spacing: 8) {
+                                                Text("Your Drawing")
+                                                    .font(.headline)
+                                                    .foregroundColor(Color("Blue 900"))
+                                                
+                                                ZStack {
+                                                    Color.white
+                                                    
+                                                    crosshairOverlay
+                                                    
+                                                    coloredFeedbackCanvas
+                                                }
+                                                .frame(width: tile, height: tile)
+                                                .cornerRadius(12)
+                                                .overlay(
+                                                    RoundedRectangle(cornerRadius: 12)
+                                                        .stroke(Color("Blue 700"), lineWidth: 2)
                                                 )
-                                                .id(replayNonce)
+                                            }
+                                            
+                                            VStack(spacing: 8) {
+                                                Text("True Character")
+                                                    .font(.headline)
+                                                    .foregroundColor(Color("Blue 900"))
+                                                
+                                                ZStack {
+                                                    Color.white
+                                                    
+                                                    crosshairOverlay
+                                                    
+                                                    // Hybrid animation: user's correct strokes + reference for misses
+                                                    GeometryReader { geo in
+                                                        if let result = analysisResult {
+                                                            // Quantize size to reduce layout-churn replays on settings toggle
+                                                            let size = floor(min(geo.size.width, geo.size.height) / 8.0) * 8.0
+                                                            let duration = max(0.1, Double(result.referenceStrokes.count) * secondsPerStroke)
+                                                            ReferenceStrokeMaskAnimationView(
+                                                                referenceStrokes: result.referenceStrokes,
+                                                                userStrokes: result.userStrokes,
+                                                                strokeResults: result.strokeResults,
+                                                                originalCanvasSize: canvasSize,
+                                                                boundingBox: currentBoundingBox,
+                                                                canvasSize: size,
+                                                                totalDuration: duration,
+                                                                replayNonce: replayNonce,
+                                                                pause: showSettings
+                                                            )
+                                                            .id(replayNonce)
+                                                        }
+                                                    }
+                                                }
+                                                .frame(width: tile, height: tile)
+                                                .cornerRadius(12)
+                                                .overlay(alignment: .topTrailing) {
+                                                    Button(action: { replayNonce += 1 }) {
+                                                        Image(systemName: "arrow.clockwise")
+                                                            .foregroundColor(Color("Blue 700"))
+                                                            .padding(8)
+                                                            .background(Color.white.opacity(0.9))
+                                                            .clipShape(Circle())
+                                                            .shadow(color: Color.black.opacity(0.1), radius: 3, x: 0, y: 1)
+                                                    }
+                                                    .padding(6)
+                                                }
+                                                .overlay(
+                                                    RoundedRectangle(cornerRadius: 12)
+                                                        .stroke(Color("Blue 700"), lineWidth: 2)
+                                                )
+                                            }
+                                            
+                                            // Bottom panel: Reference Character
+                                            VStack(spacing: 8) {
+                                                Text("Reference Character")
+                                                    .font(.headline)
+                                                    .foregroundColor(Color("Blue 900"))
+                                                
+                                                ZStack {
+                                                    Color.white
+                                                    
+                                                    crosshairOverlay
+                                                    
+                                                    trueCharacterCanvas
+                                                }
+                                                .frame(width: tile, height: tile)
+                                                .cornerRadius(12)
+                                                .overlay(
+                                                    RoundedRectangle(cornerRadius: 12)
+                                                        .stroke(Color("Blue 700").opacity(0.3), lineWidth: 2)
+                                                )
                                             }
                                         }
+                                        .frame(maxWidth: .infinity)
+                                        .padding(.vertical, 12)
                                     }
-                                    .aspectRatio(1.0, contentMode: .fit)
-                                    .cornerRadius(12)
-                                    .overlay(alignment: .topTrailing) {
-                                        Button(action: { replayNonce += 1 }) {
-                                            Image(systemName: "arrow.clockwise")
-                                                .foregroundColor(Color("Blue 700"))
-                                                .padding(8)
-                                                .background(Color.white.opacity(0.9))
-                                                .clipShape(Circle())
-                                                .shadow(color: Color.black.opacity(0.1), radius: 3, x: 0, y: 1)
+                                }
+                                .padding(.horizontal, 16)
+                            } else {
+                                Spacer()
+                                
+                                // Side-by-side comparison view
+                                GeometryReader { outerGeo in
+                                    HStack(spacing: 16) {
+                                    // Left: User's color-coded strokes
+                                    VStack(spacing: 8) {
+                                        Text("Your Drawing")
+                                            .font(.headline)
+                                            .foregroundColor(Color("Blue 900"))
+                                        
+                                        ZStack {
+                                            Color.white
+                                            
+                                            crosshairOverlay
+                                            
+                                            coloredFeedbackCanvas
                                         }
-                                        .padding(6)
+                                        .aspectRatio(1.0, contentMode: .fit)
+                                        .cornerRadius(12)
+                                        .overlay(
+                                            RoundedRectangle(cornerRadius: 12)
+                                                .stroke(Color("Blue 700"), lineWidth: 2)
+                                        )
                                     }
-                                    .overlay(alignment: .topLeading) {
-                                        if showTopProbs, let result = analysisResult {
-                                            VStack(alignment: .leading, spacing: 2) {
-                                                ForEach(Array(result.strokeResults.enumerated()), id: \.offset) { idx, r in
-                                                    Text(probabilityText(index: idx, probability: r.bestMatchProbability, error: r.rawError))
-                                                        .font(.caption2.monospacedDigit())
-                                                        .foregroundColor(Color("Blue 900"))
+                                    
+                                    // Right: Animated true character (mask-based reveal)
+                                    VStack(spacing: 8) {
+                                        Text("True Character")
+                                            .font(.headline)
+                                            .foregroundColor(Color("Blue 900"))
+                                        
+                                        ZStack {
+                                            Color.white
+                                            
+                                            crosshairOverlay
+                                            
+                                            // Hybrid animation: user's correct strokes + reference for misses
+                                            GeometryReader { geo in
+                                                if let result = analysisResult {
+                                                    // Quantize size to reduce layout-churn replays on settings toggle
+                                                    let size = floor(min(geo.size.width, geo.size.height) / 8.0) * 8.0
+                                                    let duration = max(0.1, Double(result.referenceStrokes.count) * secondsPerStroke)
+                                                    ReferenceStrokeMaskAnimationView(
+                                                        referenceStrokes: result.referenceStrokes,
+                                                        userStrokes: result.userStrokes,
+                                                        strokeResults: result.strokeResults,
+                                                        originalCanvasSize: canvasSize,
+                                                        boundingBox: currentBoundingBox,
+                                                        canvasSize: size,
+                                                        totalDuration: duration,
+                                                        replayNonce: replayNonce,
+                                                        pause: showSettings
+                                                    )
+                                                    .id(replayNonce)
                                                 }
                                             }
-                                            .padding(6)
-                                            .background(Color.white.opacity(0.85))
-                                            .cornerRadius(8)
-                                            .shadow(color: Color.black.opacity(0.1), radius: 3, x: 0, y: 1)
+                                        }
+                                        .aspectRatio(1.0, contentMode: .fit)
+                                        .cornerRadius(12)
+                                        .overlay(alignment: .topTrailing) {
+                                            Button(action: { replayNonce += 1 }) {
+                                                Image(systemName: "arrow.clockwise")
+                                                    .foregroundColor(Color("Blue 700"))
+                                                    .padding(8)
+                                                    .background(Color.white.opacity(0.9))
+                                                    .clipShape(Circle())
+                                                    .shadow(color: Color.black.opacity(0.1), radius: 3, x: 0, y: 1)
+                                            }
                                             .padding(6)
                                         }
+                                        .overlay(
+                                            RoundedRectangle(cornerRadius: 12)
+                                                .stroke(Color("Blue 700"), lineWidth: 2)
+                                        )
                                     }
+                                    }
+                                    .padding(.horizontal, outerGeo.size.width * 0.05)
+                                    .padding(.top, 150)
+                                }
+                                
+                                Spacer()
+                                
+                                // Bottom panel: Reference Character
+                                VStack(spacing: 8) {
+                                    Text("Reference Character")
+                                        .font(.headline)
+                                        .foregroundColor(Color("Blue 900"))
+                                    
+                                    ZStack {
+                                        Color.white
+                                        
+                                        crosshairOverlay
+                                        
+                                        trueCharacterCanvas
+                                    }
+                                    .frame(width: 150, height: 150)
+                                    .cornerRadius(12)
                                     .overlay(
                                         RoundedRectangle(cornerRadius: 12)
-                                            .stroke(Color("Blue 700"), lineWidth: 2)
+                                            .stroke(Color("Blue 700").opacity(0.3), lineWidth: 2)
                                     )
                                 }
-                            }
-                            
-                            // Bottom panel: Reference Character
-                            VStack(spacing: 8) {
-                                Text("Reference Character")
-                                    .font(.headline)
-                                    .foregroundColor(Color("Blue 900"))
+                                .padding(.top, 16)
                                 
-                                ZStack {
-                                    Color.white
-                                    
-                                    trueCharacterCanvas
-                                }
-                                .frame(width: 150, height: 150)
-                                .cornerRadius(12)
-                                .overlay(
-                                    RoundedRectangle(cornerRadius: 12)
-                                        .stroke(Color("Blue 700").opacity(0.3), lineWidth: 2)
-                                )
+                                Spacer()
                             }
-                            .padding(.top, 16)
-                            
-                            Spacer()
                         }
                     } else {
                         // Single drawing area when not in feedback mode
@@ -459,22 +577,41 @@ struct FlashcardPracticeView: View {
                         }
                         
                         HStack(spacing: 12) {
-                            // Undo button
-                            Button(action: { _ = viewModel.undo() }) {
-                                Image(systemName: "arrow.uturn.backward")
-                                    .font(.headline)
-                                    .foregroundColor(Color("Blue 700"))
-                                    .frame(width: 50)
-                                    .padding(.vertical, 16)
-                                    .background(Color.white)
-                                    .cornerRadius(12)
-                                    .overlay(
-                                        RoundedRectangle(cornerRadius: 12)
-                                            .stroke(Color("Blue 700"), lineWidth: 2)
-                                    )
+                            // Back / Retry button
+                            Button(action: {
+                                if showFeedback {
+                                    // If last attempt was not perfect, restore previous streak
+                                    if !isPerfectCharacter {
+                                        perfectStreakCount = prevStreakBeforeFinish
+                                    }
+                                    // Exit feedback to drawing mode for current character
+                                    showFeedback = false
+                                    analysisResult = nil
+                                    isPerfectCharacter = false
+                                    currentBoundingBox = nil
+                                    viewModel.clear()
+                                } else {
+                                    previousCard()
+                                }
+                            }) {
+                                HStack {
+                                    Image(systemName: "arrow.left")
+                                    Text(showFeedback ? "Back to Draw" : "Back")
+                                }
+                                .font(.headline)
+                                .foregroundColor(Color("Blue 700"))
+                                .frame(maxWidth: .infinity)
+                                .padding(.vertical, 16)
+                                .background(Color.white)
+                                .cornerRadius(12)
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 12)
+                                        .stroke(Color("Blue 700"), lineWidth: 2)
+                                )
+                                .shadow(color: Color.black.opacity(0.1), radius: 4, x: 0, y: 2)
                             }
-                            .disabled(showFeedback)
-                            .opacity(showFeedback ? 0.5 : 1.0)
+                            .disabled(!showFeedback && !shuffle && currentIndex == 0)
+                            .opacity(!showFeedback && !shuffle && currentIndex == 0 ? 0.5 : 1.0)
                             
                             Button(action: finishCharacter) {
                                 HStack {
@@ -528,18 +665,26 @@ struct FlashcardPracticeView: View {
             }
             .sheet(isPresented: $showSettings) { settingsSheet }
             .onChange(of: showSettings) { opened in
-                // Apply updated settings when the sheet is dismissed
-                guard !opened, showFeedback, !currentCharacter.isEmpty else { return }
-                let userStrokes = viewModel.currentCharacter.strokes
-                // Recompute bounding box in case size changed
-                currentBoundingBox = calculateBoundingBox(for: userStrokes)
-                analysisResult = StrokeAnalyzer.analyzeCharacter(
-                    userStrokes: userStrokes,
-                    character: currentCharacter,
-                    boundingBox: currentBoundingBox,
-                    errorThreshold: errorThreshold
-                )
-                checkIfPerfect()
+                if opened {
+                    // Snapshot inputs while entering settings
+                    snapshotUserStrokes = analysisResult?.userStrokes ?? viewModel.currentCharacter.strokes
+                    snapshotBoundingBox = currentBoundingBox
+                } else {
+                    // Apply updated settings when the sheet is dismissed
+                    guard showFeedback, !currentCharacter.isEmpty else { return }
+                    let userStrokes = snapshotUserStrokes.isEmpty ? (analysisResult?.userStrokes ?? viewModel.currentCharacter.strokes) : snapshotUserStrokes
+                    let bbox = snapshotBoundingBox ?? currentBoundingBox
+                    analysisResult = StrokeAnalyzer.analyzeCharacter(
+                        userStrokes: userStrokes,
+                        character: currentCharacter,
+                        boundingBox: bbox,
+                        errorThreshold: errorThreshold
+                    )
+                    currentBoundingBox = bbox
+                    checkIfPerfect()
+                    // Rebuild once to ensure the hybrid uses updated matches
+                    replayNonce += 1
+                }
             }
     }
     
@@ -552,11 +697,7 @@ struct FlashcardPracticeView: View {
         }
     }
     
-    private func probabilityText(index: Int, probability: Double, error: Double) -> String {
-        let percent = Int(probability * 100)
-        let errRounded = (error * 1000).rounded() / 1000
-        return "U\(index + 1): \(percent)% err:\(errRounded)"
-    }
+    
 
     //Canvas and corresponding drawing
     private var drawingCanvas: some View {
@@ -668,15 +809,9 @@ struct FlashcardPracticeView: View {
     // Perfect Character Banner
     private var perfectCharacterBanner: some View {
         HStack {
-            Image(systemName: "checkmark.seal.fill")
-                .font(.title)
-                .foregroundColor(.white)
             Text("Perfect Character!")
                 .font(.title2)
                 .fontWeight(.bold)
-                .foregroundColor(.white)
-            Image(systemName: "checkmark.seal.fill")
-                .font(.title)
                 .foregroundColor(.white)
         }
         .padding(.horizontal, 32)
@@ -742,6 +877,7 @@ struct FlashcardPracticeView: View {
         sessionAttempted.removeAll()
         sessionPerfectCount = 0
         showCongrats = false
+        prevStreakBeforeFinish = 0
     }
 
     private func prepareInitialPrompt() {
@@ -780,6 +916,9 @@ struct FlashcardPracticeView: View {
             // Start animation
         }
         
+        // Remember streak before applying result so we can restore on retry
+        prevStreakBeforeFinish = perfectStreakCount
+        
         viewModel.completeCurrentCharacter()
         if isPerfectCharacter {
             perfectStreakCount += 1
@@ -801,6 +940,7 @@ struct FlashcardPracticeView: View {
         analysisResult = nil
         showFeedback = false
         viewModel.clear()
+        prevStreakBeforeFinish = 0
         if shuffle {
             currentIndex = Int.random(in: 0..<flashcardItems.count)
         } else {
@@ -904,27 +1044,19 @@ struct FlashcardPracticeView: View {
     private var settingsPanel: some View {
         VStack(alignment: .leading, spacing: 16) {
             HStack {
-                Text("Algorithm Parameters")
-                    .font(.headline)
-                    .foregroundColor(Color("Blue 900"))
                 Spacer()
                 Button(action: resetParameters) {
                     Text("Reset")
                         .font(.caption)
-                        .foregroundColor(Color("Blue 700"))
+                        .foregroundColor(Color.white)
+                        .padding(.vertical, 6)
+                        .padding(.horizontal, 12)
+                        .background(Color("Blue 700"))
+                        .cornerRadius(8)
                 }
             }
             
             VStack(alignment: .leading, spacing: 12) {
-                Text("Baseline Algorithm")
-                    .font(.caption)
-                    .foregroundColor(Color("Neutral 700"))
-                Text("Fréchet distance + Optimal assignment")
-                    .font(.caption)
-                    .foregroundColor(Color("Neutral 700"))
-                    .italic()
-                
-                // Bounding Box Size
                 VStack(alignment: .leading, spacing: 4) {
                     HStack {
                         Text("Bounding Box Size")
@@ -934,11 +1066,9 @@ struct FlashcardPracticeView: View {
                             .font(.subheadline.monospacedDigit())
                             .foregroundColor(Color("Blue 700"))
                     }
+
                     Slider(value: $boundingBoxSize, in: 0.2...1.0, step: 0.05)
                         .accentColor(Color("Blue 700"))
-                    Text("Size of drawing area guide box")
-                        .font(.caption)
-                        .foregroundColor(Color("Neutral 700"))
                 }
 
                 // Animation Speed
@@ -953,15 +1083,11 @@ struct FlashcardPracticeView: View {
                     }
                     Slider(value: $secondsPerStroke, in: 0.10...1.50, step: 0.05)
                         .accentColor(Color("Blue 700"))
-                    Text("Time per stroke in the right panel animation")
-                        .font(.caption)
-                        .foregroundColor(Color("Neutral 700"))
                 }
-
                 // Sensitivity (Error Threshold)
                 VStack(alignment: .leading, spacing: 4) {
                     HStack {
-                        Text("Sensitivity")
+                        Text("Error Tolerance")
                             .font(.subheadline)
                         Spacer()
                         Text(String(format: "%.3f", errorThreshold))
@@ -970,17 +1096,7 @@ struct FlashcardPracticeView: View {
                     }
                     Slider(value: $errorThreshold, in: 0.25...0.40, step: 0.01)
                         .accentColor(Color("Blue 700"))
-                    Text("Error threshold (Fréchet distance) for removing strokes")
-                        .font(.caption)
-                        .foregroundColor(Color("Neutral 700"))
                 }
-
-                // Debug: Show top probabilities
-                Toggle(isOn: $showTopProbs) {
-                    Text("Show Top Probabilities")
-                        .font(.subheadline)
-                }
-                .toggleStyle(SwitchToggleStyle(tint: Color("Blue 700")))
             }
         }
         .padding(16)
@@ -1009,6 +1125,8 @@ struct FlashcardPracticeView: View {
     
     private func resetParameters() {
         boundingBoxSize = 0.8
+        secondsPerStroke = 0.5
+        errorThreshold = 0.3
     }
 
     private func nextCard() {
@@ -1024,6 +1142,30 @@ struct FlashcardPracticeView: View {
             currentIndex = Int.random(in: 0..<flashcardItems.count)
         } else {
             currentIndex = (currentIndex + 1) % flashcardItems.count
+        }
+        let item = flashcardItems[currentIndex]
+        currentPrompt = item.definition
+        currentCharacter = item.hanzi
+        viewModel.clear()
+    }
+
+    private func previousCard() {
+        guard !flashcardItems.isEmpty else { return }
+
+        // If not shuffling and already at the first card, do nothing (preserve current state)
+        if !shuffle && currentIndex == 0 { return }
+
+        // Clear feedback and state only when navigating
+        showFeedback = false
+        analysisResult = nil
+        isPerfectCharacter = false
+        currentBoundingBox = nil
+
+        // Shuffle jumps randomly; otherwise step back without wrapping
+        if shuffle {
+            currentIndex = Int.random(in: 0..<flashcardItems.count)
+        } else {
+            currentIndex = currentIndex - 1
         }
         let item = flashcardItems[currentIndex]
         currentPrompt = item.definition
@@ -1452,10 +1594,18 @@ final class ReferenceMaskAnimationContainerView: UIView {
             maskLayer.strokeColor = UIColor.black.cgColor
             maskLayer.fillColor = UIColor.clear.cgColor
             
-            // Adaptive width: ensure small dot strokes get a sufficiently wide mask
-            var lw = max(0.10 * canvasSize, 0.50 * maxDim)
-            if medLen < (0.08 * canvasSize) {
-                lw = max(lw, maxDim * 1.25)
+            var lw: CGFloat
+            if let _ = refToUser[refIndex], let bb = boundingBox, bb.width > 0, bb.height > 0 {
+                let scale = canvasSize / max(bb.width, bb.height)
+                let baseUserWidth: CGFloat = 12
+                let factor: CGFloat = 1.2
+                lw = max(1, baseUserWidth * scale * factor)
+            } else {
+                var fallback = max(0.10 * canvasSize, 0.50 * maxDim)
+                if medLen < (0.08 * canvasSize) {
+                    fallback = max(fallback, maxDim * 1.25)
+                }
+                lw = fallback
             }
             maskLayer.lineWidth = lw
             

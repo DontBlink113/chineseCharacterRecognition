@@ -7,6 +7,8 @@ struct AddDefinitionsView: View {
     let setId: UUID
     
     @State private var items: [FlashcardItem] = []
+    @State private var newHanziText: String = ""
+    @State private var showEmptySetAlert: Bool = false
     
     private var learningSet: LearningSet? {
         store.sets.first { $0.id == setId }
@@ -20,7 +22,7 @@ struct AddDefinitionsView: View {
             ScrollView {
                 VStack(spacing: 24) {
                     // Title
-                    Text("Add Definitions")
+                    Text("Edit Character List")
                         .font(.system(size: 40)).bold()
                         .foregroundColor(Color("Blue 900"))
                         .padding(.top, 20)
@@ -31,6 +33,33 @@ struct AddDefinitionsView: View {
                             .foregroundColor(Color("Neutral 700"))
                     }
                     
+                    // Add/remove characters section
+                    VStack(alignment: .leading, spacing: 12) {
+                        Text("Add Characters")
+                            .font(.headline)
+                            .foregroundColor(Color("Blue 900"))
+                        HStack(spacing: 8) {
+                            TextField("Type or paste characters (e.g., 你好)", text: $newHanziText)
+                                .textFieldStyle(.roundedBorder)
+                                .submitLabel(.done)
+                                .onSubmit { addCharacters() }
+                            Button(action: addCharacters) {
+                                HStack(spacing: 6) {
+                                    Image(systemName: "plus.circle.fill")
+                                    Text("Add")
+                                }
+                                .font(.subheadline)
+                                .foregroundColor(Color("Sand 100"))
+                                .padding(.vertical, 8)
+                                .padding(.horizontal, 12)
+                                .background(Color("Blue 700"))
+                                .cornerRadius(8)
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                    .padding(.horizontal, 24)
+
                     // Auto-generate all button
                     Button(action: autoGenerateAll) {
                         HStack {
@@ -71,6 +100,16 @@ struct AddDefinitionsView: View {
                                     .padding(.vertical, 6)
                                     .background(Color.white)
                                     .cornerRadius(8)
+                                }
+                                .buttonStyle(.plain)
+
+                                Button(action: { deleteItem(at: index) }) {
+                                    Image(systemName: "trash")
+                                        .foregroundColor(.red)
+                                        .padding(.horizontal, 10)
+                                        .padding(.vertical, 6)
+                                        .background(Color.white)
+                                        .cornerRadius(8)
                                 }
                                 .buttonStyle(.plain)
                             }
@@ -119,6 +158,14 @@ struct AddDefinitionsView: View {
         .navigationBarTitleDisplayMode(.inline)
         .onAppear {
             loadItems()
+        }
+        .alert(isPresented: $showEmptySetAlert) {
+            Alert(
+                title: Text("Empty Set"),
+                message: Text("This set has no characters. Delete this set?"),
+                primaryButton: .destructive(Text("Delete")) { deleteSetAndDismiss() },
+                secondaryButton: .cancel()
+            )
         }
     }
     
@@ -172,8 +219,38 @@ struct AddDefinitionsView: View {
     
     private func saveDefinitions() {
         guard var set = learningSet else { return }
+        if items.isEmpty {
+            showEmptySetAlert = true
+            return
+        }
         set.items = items
+        // Keep characters in sync with items
+        set.characters = items.map { $0.hanzi }.joined()
         store.update(set)
+        dismiss()
+    }
+
+    private func addCharacters() {
+        let chars = extractHanzi(from: newHanziText)
+        guard !chars.isEmpty else { return }
+        let existing = Set(items.map { $0.hanzi })
+        var added = false
+        for c in chars where !existing.contains(c) {
+            items.append(FlashcardItem(hanzi: c, definition: ""))
+            added = true
+        }
+        if added { newHanziText = "" }
+    }
+
+    private func deleteItem(at index: Int) {
+        guard items.indices.contains(index) else { return }
+        items.remove(at: index)
+    }
+
+    private func deleteSetAndDismiss() {
+        guard let set = learningSet, let idx = store.sets.firstIndex(where: { $0.id == set.id }) else { return }
+        let idxSet = IndexSet(integer: idx)
+        store.remove(at: idxSet)
         dismiss()
     }
 }

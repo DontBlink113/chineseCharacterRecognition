@@ -40,9 +40,24 @@
 		0139382E2EFC8A3E0041C8D7 /* Chinese Language Dictionary - All Characters (Frequency).csv */ = {isa = PBXFileReference; lastKnownFileType = text; path = "Chinese Language Dictionary - All Characters (Frequency).csv"; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
+/* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
+		013939A52F0B81F00041C8D7 /* Exceptions for "Chinese Language Character Writer" folder in "Chinese Language Character WriterTests" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				"Licenses/Arphic-Public-License.txt",
+				"Licenses/LGPL-3.0.txt",
+				Licenses/ThirdPartyNotices.txt,
+			);
+			target = 013935772ECD99A00041C8D7 /* Chinese Language Character WriterTests */;
+		};
+/* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
+
 /* Begin PBXFileSystemSynchronizedRootGroup section */
 		013935672ECD999F0041C8D7 /* Chinese Language Character Writer */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				013939A52F0B81F00041C8D7 /* Exceptions for "Chinese Language Character Writer" folder in "Chinese Language Character WriterTests" target */,
+			);
 			path = "Chinese Language Character Writer";
 			sourceTree = "<group>";
 		};
