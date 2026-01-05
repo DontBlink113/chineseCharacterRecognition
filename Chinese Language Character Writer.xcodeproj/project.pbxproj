@@ -7,9 +7,6 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
-		013935D82EDB73440041C8D7 /* mmah.json in Resources */ = {isa = PBXBuildFile; fileRef = 013935D72EDB73440041C8D7 /* mmah.json */; };
-		013935D92EDB73440041C8D7 /* mmah.json in Resources */ = {isa = PBXBuildFile; fileRef = 013935D72EDB73440041C8D7 /* mmah.json */; };
-		013935DA2EDB73440041C8D7 /* mmah.json in Resources */ = {isa = PBXBuildFile; fileRef = 013935D72EDB73440041C8D7 /* mmah.json */; };
 		0139382F2EFC8A3E0041C8D7 /* Chinese Language Dictionary - All Characters (Frequency).csv in Resources */ = {isa = PBXBuildFile; fileRef = 0139382E2EFC8A3E0041C8D7 /* Chinese Language Dictionary - All Characters (Frequency).csv */; };
 		013938302EFC8A3E0041C8D7 /* Chinese Language Dictionary - All Characters (Frequency).csv in Resources */ = {isa = PBXBuildFile; fileRef = 0139382E2EFC8A3E0041C8D7 /* Chinese Language Dictionary - All Characters (Frequency).csv */; };
 		013938312EFC8A3E0041C8D7 /* Chinese Language Dictionary - All Characters (Frequency).csv in Resources */ = {isa = PBXBuildFile; fileRef = 0139382E2EFC8A3E0041C8D7 /* Chinese Language Dictionary - All Characters (Frequency).csv */; };
@@ -36,7 +33,6 @@
 		013935652ECD999F0041C8D7 /* Chinese Language Character Writer.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "Chinese Language Character Writer.app"; sourceTree = BUILT_PRODUCTS_DIR; };
 		013935782ECD99A00041C8D7 /* Chinese Language Character WriterTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = "Chinese Language Character WriterTests.xctest"; sourceTree = BUILT_PRODUCTS_DIR; };
 		013935822ECD99A00041C8D7 /* Chinese Language Character WriterUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = "Chinese Language Character WriterUITests.xctest"; sourceTree = BUILT_PRODUCTS_DIR; };
-		013935D72EDB73440041C8D7 /* mmah.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = mmah.json; sourceTree = "<group>"; };
 		0139382E2EFC8A3E0041C8D7 /* Chinese Language Dictionary - All Characters (Frequency).csv */ = {isa = PBXFileReference; lastKnownFileType = text; path = "Chinese Language Dictionary - All Characters (Frequency).csv"; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
@@ -102,7 +98,6 @@
 			isa = PBXGroup;
 			children = (
 				0139382E2EFC8A3E0041C8D7 /* Chinese Language Dictionary - All Characters (Frequency).csv */,
-				013935D72EDB73440041C8D7 /* mmah.json */,
 				013935672ECD999F0041C8D7 /* Chinese Language Character Writer */,
 				0139357B2ECD99A00041C8D7 /* Chinese Language Character WriterTests */,
 				013935852ECD99A00041C8D7 /* Chinese Language Character WriterUITests */,
@@ -241,7 +236,6 @@
 			buildActionMask = 2147483647;
 			files = (
 				013938312EFC8A3E0041C8D7 /* Chinese Language Dictionary - All Characters (Frequency).csv in Resources */,
-				013935DA2EDB73440041C8D7 /* mmah.json in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -250,7 +244,6 @@
 			buildActionMask = 2147483647;
 			files = (
 				0139382F2EFC8A3E0041C8D7 /* Chinese Language Dictionary - All Characters (Frequency).csv in Resources */,
-				013935D82EDB73440041C8D7 /* mmah.json in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -259,7 +252,6 @@
 			buildActionMask = 2147483647;
 			files = (
 				013938302EFC8A3E0041C8D7 /* Chinese Language Dictionary - All Characters (Frequency).csv in Resources */,
-				013935D92EDB73440041C8D7 /* mmah.json in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

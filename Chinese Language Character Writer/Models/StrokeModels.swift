@@ -393,9 +393,6 @@ class DrawingViewModel: ObservableObject {
     @Published private(set) var currentStroke: Stroke?
     @Published private(set) var currentCharacter: CharacterDrawing
     @Published private(set) var characters: [CharacterDrawing] = []
-    @Published var isRecordingSentence: Bool = false
-    @Published private(set) var currentSentence: [CharacterDrawing] = []
-    @Published private(set) var sentenceSubstrokes: [[Stroke.Substroke]] = []
     
     // Live-tunable substroke segmentation thresholds
     @Published var cornerRatioThreshold: CGFloat = 1.1
@@ -516,10 +513,6 @@ class DrawingViewModel: ObservableObject {
         var finalized = currentCharacter
         finalized.assignNormalizedCentersToSubstrokes()
         characters.append(finalized)
-        if isRecordingSentence {
-            currentSentence.append(finalized)
-            sentenceSubstrokes.append(finalized.allSubstrokes)
-        }
         currentCharacter = CharacterDrawing()
     }
     
@@ -538,19 +531,7 @@ class DrawingViewModel: ObservableObject {
         currentCharacter.clear()
         characters.removeAll()
         currentStroke = nil
-        isRecordingSentence = false
-        currentSentence.removeAll()
-        sentenceSubstrokes.removeAll()
     }
 
-    func startSentence() {
-        isRecordingSentence = true
-        currentSentence.removeAll()
-        sentenceSubstrokes.removeAll()
-    }
-
-    func endSentence() -> ([[Stroke.Substroke]], [CharacterDrawing]) {
-        isRecordingSentence = false
-        return (sentenceSubstrokes, currentSentence)
-    }
+    
 }
