@@ -607,7 +607,8 @@ class StrokeAnalyzer {
                                 character: String, 
                                 priorSigma: Double = 2.0,
                                 useUniformPrior: Bool = true,
-                                boundingBox: CGRect? = nil) -> CharacterAnalysisResult? {
+                                boundingBox: CGRect? = nil,
+                                errorThreshold: Double = 0.35) -> CharacterAnalysisResult? {
         // Load graphics data
         let graphicsData = loadGraphicsData()
         
@@ -676,23 +677,31 @@ class StrokeAnalyzer {
             // Get raw error and probability for assigned match
             let rawError: Double
             let bestMatchProbability: Double
+            let bestMatchIndexFinal: Int?
             let isMatched: Bool
             
             if let refIdx = assignedRefIdx {
-                rawError = frechetDistances[refIdx]
+                let err = frechetDistances[refIdx]
+                rawError = err
                 bestMatchProbability = probabilities[refIdx]
-                isMatched = true
+                if err <= errorThreshold {
+                    bestMatchIndexFinal = refIdx
+                    isMatched = true
+                } else {
+                    bestMatchIndexFinal = nil
+                    isMatched = false
+                }
             } else {
-                // No assignment - find minimum distance for display
                 rawError = frechetDistances.min() ?? Double.infinity
                 bestMatchProbability = 0.0
+                bestMatchIndexFinal = nil
                 isMatched = false
             }
             
             strokeResults.append(StrokeAnalysisResult(
                 userStrokeIndex: userIdx,
                 probabilities: probabilities,
-                bestMatchIndex: assignedRefIdx,
+                bestMatchIndex: bestMatchIndexFinal,
                 bestMatchProbability: bestMatchProbability,
                 rawError: rawError,
                 isMatched: isMatched

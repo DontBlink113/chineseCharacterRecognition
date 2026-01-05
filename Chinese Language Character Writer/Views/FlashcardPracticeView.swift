@@ -21,7 +21,15 @@ struct FlashcardPracticeView: View {
     
     // Tunable parameters (baseline algorithm)
     @State private var showSettings: Bool = false
-    @State private var boundingBoxSize: Double = 0.8  // Size of bounding box relative to canvas (0.5 to 1.0)
+    @AppStorage("boundingBoxSize") private var boundingBoxSize: Double = 0.8  // Persisted size of guide box
+    @AppStorage("secondsPerStroke") private var secondsPerStroke: Double = 0.6  // Persisted animation speed
+    @AppStorage("showTopProbs") private var showTopProbs: Bool = false  // Debug overlay toggle
+    @AppStorage("errorThreshold") private var errorThreshold: Double = 0.35  // Sensitivity (Fréchet error threshold)
+    @State private var replayNonce: Int = 0  // Changing this replays the animation
+    @State private var perfectStreakCount: Int = 0
+    @State private var sessionAttempted: Set<Int> = []
+    @State private var sessionPerfectCount: Int = 0
+    @State private var showCongrats: Bool = false
 
     private var selectedSet: LearningSet? {
         if let id = selectedSetId { return store.sets.first { $0.id == id } }
@@ -33,110 +41,141 @@ struct FlashcardPracticeView: View {
         return items
     }
 
-    var body: some View {
-        Group {
-            if !inSession {
-                // Setup UI
-                ZStack {
-                    Color(red: 0.68, green: 0.85, blue: 0.9)
-                        .ignoresSafeArea()
-                    
-                    ScrollView {
-                        VStack(spacing: 24) {
-                            // Title
-                            Text("Flashcard Practice")
-                                .font(.system(size: 40)).bold()
-                                .foregroundColor(Color("Blue 900"))
-                                .padding(.top, 20)
-                            
-                            // Setup Card
-                            VStack(alignment: .leading, spacing: 20) {
-                                Text("Setup")
-                                    .font(.title2).bold()
-                                    .foregroundColor(Color("Blue 900"))
-                                
-                                if store.sets.filter({ $0.hasDefinitions }).isEmpty {
-                                    VStack(spacing: 12) {
-                                        Image(systemName: "tray")
-                                            .font(.system(size: 48))
-                                            .foregroundColor(Color("Neutral 700"))
-                                        Text("No sets with definitions")
-                                            .font(.headline)
-                                            .foregroundColor(Color("Blue 900"))
-                                        Text("Add definitions to a learning set to practice flashcards")
-                                            .font(.subheadline)
-                                            .foregroundColor(Color("Neutral 700"))
-                                            .multilineTextAlignment(.center)
-                                    }
-                                    .frame(maxWidth: .infinity)
-                                    .padding(.vertical, 30)
-                                } else {
-                                    VStack(alignment: .leading, spacing: 12) {
-                                        Text("Learning Set")
-                                            .font(.subheadline)
-                                            .foregroundColor(Color("Blue 900"))
-                                        
-                                        Picker("Learning Set", selection: Binding(
-                                            get: { selectedSetId ?? store.activeSetId },
-                                            set: { selectedSetId = $0 }
-                                        )) {
-                                            ForEach(store.sets.filter { $0.hasDefinitions }) { set in
-                                                Text(set.name).tag(Optional(set.id))
-                                            }
-                                        }
-                                        .pickerStyle(.menu)
-                                        .padding(12)
-                                        .background(Color.white.opacity(0.9))
-                                        .cornerRadius(8)
-                                        
-                                        if let set = selectedSet {
-                                            Text("\(flashcardItems.count) flashcards")
-                                                .font(.caption)
-                                                .foregroundColor(Color("Neutral 700"))
-                                        }
-                                    }
-                                    
-                                    HStack {
-                                        Text("Shuffle cards")
-                                            .foregroundColor(Color("Blue 900"))
-                                        Spacer()
-                                        Toggle("", isOn: $shuffle)
-                                            .labelsHidden()
-                                    }
-                                    .padding(12)
-                                    .background(Color.white.opacity(0.7))
-                                    .cornerRadius(8)
-                                    
-                                    Button(action: startSession) {
-                                        Text("Start Practice")
-                                            .font(.headline)
-                                            .foregroundColor(Color("Sand 100"))
-                                            .frame(maxWidth: .infinity)
-                                            .padding(.vertical, 14)
-                                            .background(Color("Blue 700"))
-                                            .cornerRadius(10)
-                                            .shadow(color: Color("Blue 700").opacity(0.3), radius: 8, x: 0, y: 4)
-                                    }
-                                    .disabled(selectedSet?.hasDefinitions != true)
-                                    .opacity(selectedSet?.hasDefinitions == true ? 1.0 : 0.6)
-                                }
-                            }
-                            .padding(20)
-                            .background(Color.white.opacity(0.7))
-                            .cornerRadius(16)
-                            .shadow(color: Color.black.opacity(0.1), radius: 10, x: 0, y: 4)
-                            .padding(.horizontal, 24)
-                            
-                            Spacer(minLength: 40)
-                        }
-                    }
+    private var setsWithDefinitions: [LearningSet] {
+        store.sets.filter { $0.hasDefinitions }
+    }
+
+    private var learningSetSelection: Binding<UUID?> {
+        Binding(
+            get: { selectedSetId ?? store.activeSetId },
+            set: { selectedSetId = $0 }
+        )
+    }
+
+    // MARK: - Setup UI Components
+    
+    private var emptyStateView: some View {
+        VStack(spacing: 12) {
+            Image(systemName: "tray")
+                .font(.system(size: 48))
+                .foregroundColor(Color("Neutral 700"))
+            Text("No sets with definitions")
+                .font(.headline)
+                .foregroundColor(Color("Blue 900"))
+            Text("Add definitions to a learning set to practice flashcards")
+                .font(.subheadline)
+                .foregroundColor(Color("Neutral 700"))
+                .multilineTextAlignment(.center)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 30)
+    }
+    
+    private var pickerSection: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Learning Set")
+                .font(.subheadline)
+                .foregroundColor(Color("Blue 900"))
+            
+            Picker("Learning Set", selection: learningSetSelection) {
+                ForEach(setsWithDefinitions) { set in
+                    Text(set.name).tag(Optional(set.id))
                 }
-                .navigationBarTitleDisplayMode(.inline)
+            }
+            .pickerStyle(.menu)
+            .padding(12)
+            .background(Color.white.opacity(0.9))
+            .cornerRadius(8)
+            
+            if let set = selectedSet {
+                Text("\(flashcardItems.count) flashcards")
+                    .font(.caption)
+                    .foregroundColor(Color("Neutral 700"))
+            }
+        }
+    }
+    
+    private var shuffleToggle: some View {
+        HStack {
+            Text("Shuffle cards")
+                .foregroundColor(Color("Blue 900"))
+            Spacer()
+            Toggle("", isOn: $shuffle)
+                .labelsHidden()
+        }
+        .padding(12)
+        .background(Color.white.opacity(0.7))
+        .cornerRadius(8)
+    }
+    
+    private var startButton: some View {
+        Button(action: startSession) {
+            Text("Start Practice")
+                .font(.headline)
+                .foregroundColor(Color("Sand 100"))
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 14)
+                .background(Color("Blue 700"))
+                .cornerRadius(10)
+                .shadow(color: Color("Blue 700").opacity(0.3), radius: 8, x: 0, y: 4)
+        }
+        .disabled(selectedSet?.hasDefinitions != true)
+        .opacity(selectedSet?.hasDefinitions == true ? 1.0 : 0.6)
+    }
+    
+    private var setupContentView: some View {
+        Group {
+            if setsWithDefinitions.isEmpty {
+                emptyStateView
             } else {
-                
-                
-                // In-session UI
-                VStack(spacing: 0) {
+                VStack(alignment: .leading, spacing: 12) {
+                    pickerSection
+                    shuffleToggle
+                    startButton
+                }
+            }
+        }
+    }
+    
+    private var setupCard: some View {
+        VStack(alignment: .leading, spacing: 20) {
+            Text("Setup")
+                .font(.title2).bold()
+                .foregroundColor(Color("Blue 900"))
+            
+            setupContentView
+        }
+        .padding(20)
+        .background(Color.white.opacity(0.7))
+        .cornerRadius(16)
+        .shadow(color: Color.black.opacity(0.1), radius: 10, x: 0, y: 4)
+        .padding(.horizontal, 24)
+    }
+    
+    private var setupUI: some View {
+        ZStack {
+            Color(red: 0.68, green: 0.85, blue: 0.9)
+                .ignoresSafeArea()
+            
+            ScrollView {
+                VStack(spacing: 24) {
+                    Text("Flashcard Practice")
+                        .font(.system(size: 40)).bold()
+                        .foregroundColor(Color("Blue 900"))
+                        .padding(.top, 20)
+                    
+                    setupCard
+                    
+                    Spacer(minLength: 40)
+                }
+            }
+        }
+        .navigationBarTitleDisplayMode(.inline)
+    }
+    
+    // MARK: - In-Session UI
+    private var inSessionUI: some View {
+        VStack(spacing: 0) {                    
                     // Top control bar
                     HStack(spacing: 16) {
                         if !showFeedback {
@@ -199,12 +238,26 @@ struct FlashcardPracticeView: View {
                     .padding(.vertical, 16)
                     .background(Color(red: 0.68, green: 0.85, blue: 0.9).opacity(0.3))
                     
-                    // Settings panel
-                    if showSettings {
-                        settingsPanel
-                            .transition(.move(edge: .top).combined(with: .opacity))
+                    // Settings shown in a separate sheet now; no inline panel here
+                    HStack(spacing: 12) {
+                        let total = max(1, flashcardItems.count)
+                        ProgressView(value: Double(min(currentIndex, total)), total: Double(total))
+                            .accentColor(Color("Blue 700"))
+                        Text("\(min(currentIndex + 1, total))/\(total)")
+                            .font(.caption.monospacedDigit())
+                            .foregroundColor(Color("Blue 900"))
+                        Spacer()
+                        HStack(spacing: 6) {
+                            Image(systemName: "flame.fill")
+                                .foregroundColor(.orange)
+                            Text("\(perfectStreakCount)")
+                                .font(.caption.monospacedDigit())
+                                .foregroundColor(Color("Blue 900"))
+                        }
                     }
-                    
+                    .padding(.horizontal, 24)
+                    .padding(.vertical, 6)
+                    .background(Color.white.opacity(0.7))
                     // Drawing area for feedback
                     if showFeedback {
                         VStack(spacing: 0) {
@@ -249,8 +302,9 @@ struct FlashcardPracticeView: View {
                                         // Hybrid animation: user's correct strokes + reference for misses
                                         GeometryReader { geo in
                                             if let result = analysisResult {
-                                                let size = min(geo.size.width, geo.size.height)
-                                                let duration = max(1.0, Double(result.referenceStrokes.count) * 0.6)
+                                                // Quantize size to reduce layout-churn replays on settings toggle
+                                                let size = floor(min(geo.size.width, geo.size.height) / 8.0) * 8.0
+                                                let duration = max(0.1, Double(result.referenceStrokes.count) * secondsPerStroke)
                                                 ReferenceStrokeMaskAnimationView(
                                                     referenceStrokes: result.referenceStrokes,
                                                     userStrokes: result.userStrokes,
@@ -258,13 +312,43 @@ struct FlashcardPracticeView: View {
                                                     originalCanvasSize: canvasSize,
                                                     boundingBox: currentBoundingBox,
                                                     canvasSize: size,
-                                                    totalDuration: duration
+                                                    totalDuration: duration,
+                                                    replayNonce: replayNonce,
+                                                    pause: showSettings
                                                 )
+                                                .id(replayNonce)
                                             }
                                         }
                                     }
                                     .aspectRatio(1.0, contentMode: .fit)
                                     .cornerRadius(12)
+                                    .overlay(alignment: .topTrailing) {
+                                        Button(action: { replayNonce += 1 }) {
+                                            Image(systemName: "arrow.clockwise")
+                                                .foregroundColor(Color("Blue 700"))
+                                                .padding(8)
+                                                .background(Color.white.opacity(0.9))
+                                                .clipShape(Circle())
+                                                .shadow(color: Color.black.opacity(0.1), radius: 3, x: 0, y: 1)
+                                        }
+                                        .padding(6)
+                                    }
+                                    .overlay(alignment: .topLeading) {
+                                        if showTopProbs, let result = analysisResult {
+                                            VStack(alignment: .leading, spacing: 2) {
+                                                ForEach(Array(result.strokeResults.enumerated()), id: \.offset) { idx, r in
+                                                    Text(probabilityText(index: idx, probability: r.bestMatchProbability, error: r.rawError))
+                                                        .font(.caption2.monospacedDigit())
+                                                        .foregroundColor(Color("Blue 900"))
+                                                }
+                                            }
+                                            .padding(6)
+                                            .background(Color.white.opacity(0.85))
+                                            .cornerRadius(8)
+                                            .shadow(color: Color.black.opacity(0.1), radius: 3, x: 0, y: 1)
+                                            .padding(6)
+                                        }
+                                    }
                                     .overlay(
                                         RoundedRectangle(cornerRadius: 12)
                                             .stroke(Color("Blue 700"), lineWidth: 2)
@@ -431,16 +515,47 @@ struct FlashcardPracticeView: View {
                         .background(Color(red: 0.68, green: 0.85, blue: 0.9).opacity(0.3))
                     }
                 }
-                .navigationTitle("Flashcards")
-                .navigationBarTitleDisplayMode(.inline)
+                .overlay( Group { if showCongrats { congratulationsOverlay } })
+    }
+
+    var body: some View {
+        content
+            .onAppear {
+                if selectedSetId == nil { selectedSetId = store.activeSetId }
+                if !inSession && !flashcardItems.isEmpty {
+                    prepareInitialPrompt()
+                }
             }
-        }
-        .onAppear {
-            if selectedSetId == nil { selectedSetId = store.activeSetId }
-            if !inSession && !flashcardItems.isEmpty {
-                prepareInitialPrompt()
+            .sheet(isPresented: $showSettings) { settingsSheet }
+            .onChange(of: showSettings) { opened in
+                // Apply updated settings when the sheet is dismissed
+                guard !opened, showFeedback, !currentCharacter.isEmpty else { return }
+                let userStrokes = viewModel.currentCharacter.strokes
+                // Recompute bounding box in case size changed
+                currentBoundingBox = calculateBoundingBox(for: userStrokes)
+                analysisResult = StrokeAnalyzer.analyzeCharacter(
+                    userStrokes: userStrokes,
+                    character: currentCharacter,
+                    boundingBox: currentBoundingBox,
+                    errorThreshold: errorThreshold
+                )
+                checkIfPerfect()
             }
+    }
+    
+    @ViewBuilder
+    private var content: some View {
+        if !inSession {
+            setupUI
+        } else {
+            inSessionUI
         }
+    }
+    
+    private func probabilityText(index: Int, probability: Double, error: Double) -> String {
+        let percent = Int(probability * 100)
+        let errRounded = (error * 1000).rounded() / 1000
+        return "U\(index + 1): \(percent)% err:\(errRounded)"
     }
 
     //Canvas and corresponding drawing
@@ -623,6 +738,10 @@ struct FlashcardPracticeView: View {
         inSession = true
         prepareInitialPrompt()
         viewModel.clear()
+        perfectStreakCount = 0
+        sessionAttempted.removeAll()
+        sessionPerfectCount = 0
+        showCongrats = false
     }
 
     private func prepareInitialPrompt() {
@@ -642,7 +761,7 @@ struct FlashcardPracticeView: View {
         // Perform stroke analysis with baseline algorithm
         let userStrokes = viewModel.currentCharacter.strokes
         
-        if !userStrokes.isEmpty && !currentCharacter.isEmpty {
+        if !currentCharacter.isEmpty {
             // Calculate the bounding box based on the visual guide box
             // Store it so feedback views can use the same normalization
             currentBoundingBox = calculateBoundingBox(for: userStrokes)
@@ -650,7 +769,8 @@ struct FlashcardPracticeView: View {
             analysisResult = StrokeAnalyzer.analyzeCharacter(
                 userStrokes: userStrokes,
                 character: currentCharacter,
-                boundingBox: currentBoundingBox
+                boundingBox: currentBoundingBox,
+                errorThreshold: errorThreshold
             )
             showFeedback = true
             
@@ -661,6 +781,80 @@ struct FlashcardPracticeView: View {
         }
         
         viewModel.completeCurrentCharacter()
+        if isPerfectCharacter {
+            perfectStreakCount += 1
+        } else {
+            perfectStreakCount = 0
+        }
+        // Track session completion and perfects
+        sessionAttempted.insert(currentIndex)
+        if isPerfectCharacter { sessionPerfectCount += 1 }
+        if sessionAttempted.count >= flashcardItems.count {
+            showCongrats = true
+        }
+    }
+
+    private func restartSet() {
+        sessionAttempted.removeAll()
+        sessionPerfectCount = 0
+        perfectStreakCount = 0
+        analysisResult = nil
+        showFeedback = false
+        viewModel.clear()
+        if shuffle {
+            currentIndex = Int.random(in: 0..<flashcardItems.count)
+        } else {
+            currentIndex = 0
+        }
+        if !flashcardItems.isEmpty {
+            let item = flashcardItems[currentIndex]
+            currentPrompt = item.definition
+            currentCharacter = item.hanzi
+        }
+        showCongrats = false
+    }
+
+    private var congratulationsOverlay: some View {
+        ZStack {
+            Color.black.opacity(0.4).ignoresSafeArea()
+            VStack(spacing: 16) {
+                Image(systemName: "star.circle.fill")
+                    .font(.system(size: 48))
+                    .foregroundColor(Color("Blue 700"))
+                Text("Congratulations!")
+                    .font(.title2)
+                    .fontWeight(.bold)
+                    .foregroundColor(Color("Blue 900"))
+                let total = max(1, flashcardItems.count)
+                Text("Perfect characters: \(sessionPerfectCount)/\(total)")
+                    .font(.headline.monospacedDigit())
+                    .foregroundColor(Color("Blue 700"))
+                HStack(spacing: 12) {
+                    Button(action: { showCongrats = false }) {
+                        Text("Close")
+                            .foregroundColor(Color("Blue 700"))
+                            .padding(.vertical, 10)
+                            .padding(.horizontal, 16)
+                            .background(Color.white)
+                            .cornerRadius(10)
+                            .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color("Blue 700"), lineWidth: 1))
+                    }
+                    Button(action: restartSet) {
+                        HStack { Image(systemName: "arrow.clockwise"); Text("Restart Set") }
+                            .foregroundColor(Color.white)
+                            .padding(.vertical, 10)
+                            .padding(.horizontal, 16)
+                            .background(Color("Blue 700"))
+                            .cornerRadius(10)
+                    }
+                }
+            }
+            .padding(24)
+            .background(Color.white)
+            .cornerRadius(16)
+            .shadow(color: Color.black.opacity(0.2), radius: 16, x: 0, y: 8)
+            .padding(.horizontal, 24)
+        }
     }
     
     /// Calculate the bounding box for stroke normalization based on the visual guide box
@@ -740,12 +934,53 @@ struct FlashcardPracticeView: View {
                             .font(.subheadline.monospacedDigit())
                             .foregroundColor(Color("Blue 700"))
                     }
-                    Slider(value: $boundingBoxSize, in: 0.5...1.0, step: 0.05)
+                    Slider(value: $boundingBoxSize, in: 0.2...1.0, step: 0.05)
                         .accentColor(Color("Blue 700"))
                     Text("Size of drawing area guide box")
                         .font(.caption)
                         .foregroundColor(Color("Neutral 700"))
                 }
+
+                // Animation Speed
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack {
+                        Text("Animation Speed")
+                            .font(.subheadline)
+                        Spacer()
+                        Text(String(format: "%.1fs / stroke", secondsPerStroke))
+                            .font(.subheadline.monospacedDigit())
+                            .foregroundColor(Color("Blue 700"))
+                    }
+                    Slider(value: $secondsPerStroke, in: 0.10...1.50, step: 0.05)
+                        .accentColor(Color("Blue 700"))
+                    Text("Time per stroke in the right panel animation")
+                        .font(.caption)
+                        .foregroundColor(Color("Neutral 700"))
+                }
+
+                // Sensitivity (Error Threshold)
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack {
+                        Text("Sensitivity")
+                            .font(.subheadline)
+                        Spacer()
+                        Text(String(format: "%.3f", errorThreshold))
+                            .font(.subheadline.monospacedDigit())
+                            .foregroundColor(Color("Blue 700"))
+                    }
+                    Slider(value: $errorThreshold, in: 0.25...0.40, step: 0.01)
+                        .accentColor(Color("Blue 700"))
+                    Text("Error threshold (Fréchet distance) for removing strokes")
+                        .font(.caption)
+                        .foregroundColor(Color("Neutral 700"))
+                }
+
+                // Debug: Show top probabilities
+                Toggle(isOn: $showTopProbs) {
+                    Text("Show Top Probabilities")
+                        .font(.subheadline)
+                }
+                .toggleStyle(SwitchToggleStyle(tint: Color("Blue 700")))
             }
         }
         .padding(16)
@@ -754,6 +989,22 @@ struct FlashcardPracticeView: View {
         .shadow(color: Color.black.opacity(0.15), radius: 8, x: 0, y: 4)
         .padding(.horizontal, 24)
         .padding(.top, 8)
+    }
+
+    // Settings sheet wrapper to isolate heavy UI updates and freeze animation/content underneath
+    private var settingsSheet: some View {
+        NavigationStack {
+            ScrollView {
+                settingsPanel
+                    .padding(.top, 12)
+            }
+            .navigationTitle("Settings")
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done") { showSettings = false }
+                }
+            }
+        }
     }
     
     private func resetParameters() {
@@ -1038,6 +1289,8 @@ struct ReferenceStrokeMaskAnimationView: UIViewRepresentable {
     let boundingBox: CGRect?
     let canvasSize: CGFloat
     let totalDuration: Double
+    let replayNonce: Int
+    let pause: Bool
     let debug: Bool = false
     let debugShowBounds: Bool = false
     
@@ -1056,6 +1309,8 @@ struct ReferenceStrokeMaskAnimationView: UIViewRepresentable {
             boundingBox: boundingBox,
             canvasSize: canvasSize,
             totalDuration: totalDuration,
+            replayNonce: replayNonce,
+            pause: pause,
             debug: debug,
             debugShowBounds: debugShowBounds
         )
@@ -1063,12 +1318,38 @@ struct ReferenceStrokeMaskAnimationView: UIViewRepresentable {
 }
 
 final class ReferenceMaskAnimationContainerView: UIView {
-    func renderAndAnimate(referenceStrokes: [ReferenceStroke], userStrokes: [Stroke], strokeResults: [StrokeAnalysisResult], originalCanvasSize: CGFloat, boundingBox: CGRect?, canvasSize: CGFloat, totalDuration: Double, debug: Bool, debugShowBounds: Bool) {
-        // Clear previous layers so the animation restarts on update
-        layer.sublayers?.forEach { $0.removeFromSuperlayer() }
+    // Cache to avoid unintended replays on unrelated state changes
+    private var built = false
+    private var prevReplayNonce: Int = -1
+    private var prevCanvasSize: CGFloat = 0
+    private var prevDuration: Double = 0
+    private var prevRefCount: Int = 0
+    private var prevUserCount: Int = 0
+    // Keep references to layers so we can update them without rebuilding/restarting animation
+    private var outlineLayers: [CAShapeLayer] = []
+    private var maskLayers: [CAShapeLayer] = []
+    private var isPaused: Bool = false
+    
+    func renderAndAnimate(referenceStrokes: [ReferenceStroke], userStrokes: [Stroke], strokeResults: [StrokeAnalysisResult], originalCanvasSize: CGFloat, boundingBox: CGRect?, canvasSize: CGFloat, totalDuration: Double, replayNonce: Int, pause: Bool, debug: Bool, debugShowBounds: Bool) {
         guard !referenceStrokes.isEmpty else { return }
         layer.masksToBounds = false
-        
+
+        // Apply pause/resume without restarting animations
+        if pause && !isPaused {
+            let pausedTime = layer.convertTime(CACurrentMediaTime(), from: nil)
+            layer.speed = 0
+            layer.timeOffset = pausedTime
+            isPaused = true
+        } else if !pause && isPaused {
+            let pausedTime = layer.timeOffset
+            layer.speed = 1
+            layer.timeOffset = 0
+            layer.beginTime = 0
+            let timeSincePause = layer.convertTime(CACurrentMediaTime(), from: nil) - pausedTime
+            layer.beginTime = timeSincePause
+            isPaused = false
+        }
+
         // Build a reverse lookup: refIndex -> matched user stroke index
         var refToUser: [Int: Int] = [:]
         for (uIdx, r) in strokeResults.enumerated() {
@@ -1076,18 +1357,74 @@ final class ReferenceMaskAnimationContainerView: UIView {
                 refToUser[refIdx] = uIdx
             }
         }
-        
-        var maskLayers: [CAShapeLayer] = []
+
+        // Determine if we actually need to rebuild/replay
+        // Only rebuild when explicitly requested (replay button) or when stroke sets change.
+        let needsRebuild = (!built)
+            || (replayNonce != prevReplayNonce)
+            || (prevRefCount != referenceStrokes.count)
+            || (prevUserCount != userStrokes.count)
+
+        if !needsRebuild {
+            // Update existing layers in place to reflect changed matches without restarting animation
+            guard outlineLayers.count == referenceStrokes.count, maskLayers.count == referenceStrokes.count else { return }
+            for (refIndex, ref) in referenceStrokes.enumerated() {
+                let outlineLayer = outlineLayers[refIndex]
+                let maskLayer = maskLayers[refIndex]
+
+                if let uIdx = refToUser[refIndex], uIdx < userStrokes.count {
+                    // Matched: use user path and stroke color (green/yellow)
+                    let userPath = createUserPath(from: userStrokes[uIdx], canvasSize: canvasSize, bbox: boundingBox)
+                    outlineLayer.path = userPath.cgPath
+                    outlineLayer.fillColor = UIColor.clear.cgColor
+                    let r = strokeResults[uIdx]
+                    let strokeUIColor: UIColor = {
+                        if let matchedRef = r.bestMatchIndex, matchedRef == uIdx { return UIColor.systemGreen } else { return UIColor.systemYellow }
+                    }()
+                    outlineLayer.strokeColor = strokeUIColor.cgColor
+                    outlineLayer.lineWidth = max(16, canvasSize * 0.05)
+                    outlineLayer.lineCap = .round
+                    outlineLayer.lineJoin = .round
+
+                    // Mask follows user path
+                    maskLayer.path = userPath.cgPath
+                    maskLayer.strokeColor = UIColor.black.cgColor
+                    maskLayer.fillColor = UIColor.clear.cgColor
+                } else {
+                    // Unmatched: revert to reference outline and median mask
+                    let outlinePath = createBezierPath(from: ref.svgPath, canvasSize: canvasSize)
+                    outlineLayer.path = outlinePath.cgPath
+                    outlineLayer.fillColor = UIColor.black.cgColor
+                    outlineLayer.strokeColor = nil
+
+                    let medianPath = createStrokePath(from: ref.medianPoints, canvasSize: canvasSize)
+                    maskLayer.path = medianPath.cgPath
+                    maskLayer.strokeColor = UIColor.black.cgColor
+                    maskLayer.fillColor = UIColor.clear.cgColor
+                }
+                // Do NOT modify maskLayer.strokeEnd; keep current animation progress
+            }
+            return
+        }
+
+        // Clear previous layers only when genuinely rebuilding
+        layer.sublayers?.forEach { $0.removeFromSuperlayer() }
+        outlineLayers.removeAll()
+        maskLayers.removeAll()
         for (refIndex, ref) in referenceStrokes.enumerated() {
             // 1) Full outline as filled shape
             let outlineLayer = CAShapeLayer()
             let outlinePath = createBezierPath(from: ref.svgPath, canvasSize: canvasSize)
-            // If this ref stroke is matched, use the user's normalized stroke path instead of the reference outline
+            // If this ref stroke is matched, draw the user's path directly (scaled from original canvas size, no inset)
             if let uIdx = refToUser[refIndex], uIdx < userStrokes.count {
-                let userPath = createUserPath(from: userStrokes[uIdx], canvasSize: canvasSize, originalCanvasSize: originalCanvasSize)
+                let userPath = createUserPath(from: userStrokes[uIdx], canvasSize: canvasSize, bbox: boundingBox)
                 outlineLayer.path = userPath.cgPath
                 outlineLayer.fillColor = UIColor.clear.cgColor
-                outlineLayer.strokeColor = UIColor.black.cgColor
+                let r = strokeResults[uIdx]
+                let strokeUIColor: UIColor = {
+                    if let refIdx = r.bestMatchIndex, refIdx == uIdx { return UIColor.systemGreen } else { return UIColor.systemYellow }
+                }()
+                outlineLayer.strokeColor = strokeUIColor.cgColor
                 outlineLayer.lineWidth = max(16, canvasSize * 0.05)
                 outlineLayer.lineCap = .round
                 outlineLayer.lineJoin = .round
@@ -1104,9 +1441,14 @@ final class ReferenceMaskAnimationContainerView: UIView {
             let maxDim = max(bbox.width, bbox.height)
             let medLen = medianLength(ref.medianPoints, canvasSize: canvasSize)
             
-            // 2) Reveal mask along median path
+            // 2) Reveal mask: use user path (no inset) for matched strokes; otherwise median path (with 10% inset)
             let maskLayer = CAShapeLayer()
-            maskLayer.path = createStrokePath(from: ref.medianPoints, canvasSize: canvasSize).cgPath
+            if let uIdx = refToUser[refIndex], uIdx < userStrokes.count {
+                let userMaskPath = createUserPath(from: userStrokes[uIdx], canvasSize: canvasSize, bbox: boundingBox)
+                maskLayer.path = userMaskPath.cgPath
+            } else {
+                maskLayer.path = createStrokePath(from: ref.medianPoints, canvasSize: canvasSize).cgPath
+            }
             maskLayer.strokeColor = UIColor.black.cgColor
             maskLayer.fillColor = UIColor.clear.cgColor
             
@@ -1125,7 +1467,8 @@ final class ReferenceMaskAnimationContainerView: UIView {
             
             outlineLayer.mask = maskLayer
             layer.addSublayer(outlineLayer)
-            maskLayers.append(maskLayer)
+            self.outlineLayers.append(outlineLayer)
+            self.maskLayers.append(maskLayer)
             
             if debug {
                 let debugMask = CAShapeLayer()
@@ -1171,6 +1514,24 @@ final class ReferenceMaskAnimationContainerView: UIView {
             m.add(anim, forKey: "reveal")
             // Keep model at 0; animation + fillMode will display progress and final state
         }
+
+        // If paused after rebuild, immediately pause animations
+        if pause {
+            let pausedTime = layer.convertTime(CACurrentMediaTime(), from: nil)
+            layer.speed = 0
+            layer.timeOffset = pausedTime
+            isPaused = true
+        } else {
+            isPaused = false
+        }
+
+        // Cache current config
+        built = true
+        prevReplayNonce = replayNonce
+        prevCanvasSize = canvasSize
+        prevDuration = totalDuration
+        prevRefCount = referenceStrokes.count
+        prevUserCount = userStrokes.count
     }
     
     // Helpers
@@ -1257,20 +1618,23 @@ final class ReferenceMaskAnimationContainerView: UIView {
         return p
     }
     
-    private func createUserPath(from stroke: Stroke, canvasSize: CGFloat, originalCanvasSize: CGFloat) -> UIBezierPath {
+
+    private func createUserPath(from stroke: Stroke, canvasSize: CGFloat, bbox: CGRect?) -> UIBezierPath {
         let p = UIBezierPath()
         // Use displayPoints for fidelity (time-series as drawn)
         let pts = stroke.displayPoints.map { $0.location }
-        guard !pts.isEmpty, originalCanvasSize > 0 else { return p }
-        // Draw within 80% inner box with 10% padding per side
-        let inset: CGFloat = 0.10
-        let inner: CGFloat = 1.0 - inset * 2.0
+        guard !pts.isEmpty, let bb = bbox, bb.width > 0, bb.height > 0 else { return p }
+
+        // Map via guide bounding box WITHOUT inset so it fills the panel like the left view
         let scaled = pts.map { pt in
-            CGPoint(
-                x: ((pt.x / originalCanvasSize) * inner + inset) * canvasSize,
-                y: ((pt.y / originalCanvasSize) * inner + inset) * canvasSize
+            let nx = (pt.x - bb.minX) / bb.width
+            let ny = (pt.y - bb.minY) / bb.height
+            return CGPoint(
+                x: nx * canvasSize,
+                y: ny * canvasSize
             )
         }
+
         if scaled.count == 1 {
             let c = scaled[0]
             p.addArc(withCenter: c, radius: max(1, canvasSize * 0.01), startAngle: 0, endAngle: CGFloat.pi * 2, clockwise: true)
@@ -1280,7 +1644,6 @@ final class ReferenceMaskAnimationContainerView: UIView {
         for i in 1..<scaled.count { p.addLine(to: scaled[i]) }
         return p
     }
-    
     private func scaleAndFlipPoint(_ point: CGPoint, canvasSize: CGFloat) -> CGPoint {
         // svgPath has been normalized to [0,1] in StrokeAnalyzer; draw within 80% inner box with 10% padding
         let inset: CGFloat = 0.10

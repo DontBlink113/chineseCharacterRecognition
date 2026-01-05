@@ -2,83 +2,79 @@ import SwiftUI
 
 struct HomeView: View {
     var body: some View {
-        GeometryReader { geometry in
-            ZStack {
-                Color(red: 0.68, green: 0.85, blue: 0.9)
-                    .ignoresSafeArea()
+        ZStack {
+            Color(red: 0.68, green: 0.85, blue: 0.9)
+                .ignoresSafeArea()
 
-                VStack(spacing: 20) {
-                    // Top bar with Profile button
-                    HStack {
-                        Spacer()
-                        
-                        Button(action: {
-                            // Profile action - not implemented yet
-                        }) {
-                            Image(systemName: "person.circle.fill")
-                                .font(.title2)
-                                .foregroundColor(Color("Blue 900"))
-                        }
-                    }
-                    .padding(.horizontal)
-                    .padding(.top, 10)
-
-                    Spacer()
-
+            VStack(spacing: 0) {
+                Spacer()
+                
+                // Hero section - title card
+                VStack(spacing: 16) {
                     Text("Chinese Character Writing")
-                        .font(.system(size: 60)).bold()
+                        .font(.system(size: 52, weight: .bold))
                         .foregroundColor(Color("Blue 900"))
-                        .padding(.bottom, 30)
-
-                    HStack(spacing: 24) {
-                        NavigationLink(destination: SentencePracticeView()) {
-                            Text("Sentence Practice")
-                                .font(.title2)
-                                .fontWeight(.semibold)
-                                .foregroundColor(Color("Sand 100"))
-                                .padding(.horizontal, 28)
-                                .padding(.vertical, 20)
-                                .frame(minWidth: 200)
-                                .background(Color("Blue 700"))
-                                .cornerRadius(14)
-                                .shadow(color: Color("Blue 700").opacity(0.3), radius: 10, x: 0, y: 5)
-                        }
-
-                        NavigationLink(destination: FlashcardPracticeView()) {
-                            Text("Flashcards")
-                                .font(.title2)
-                                .fontWeight(.semibold)
-                                .foregroundColor(Color("Sand 100"))
-                                .padding(.horizontal, 28)
-                                .padding(.vertical, 20)
-                                .frame(minWidth: 200)
-                                .background(Color("Blue 700"))
-                                .cornerRadius(14)
-                                .shadow(color: Color("Blue 700").opacity(0.3), radius: 10, x: 0, y: 5)
-                        }
+                        .multilineTextAlignment(.center)
+                        .lineLimit(2)
+                    
+                    Text("Learning to write chinese characters with intelligent feedback")
+                        .font(.title2)
+                        .foregroundColor(Color("Blue 900").opacity(0.9))
+                        .multilineTextAlignment(.center)
+                        .padding(.horizontal, 40)
+                }
+                .padding(.vertical, 40)
+                .padding(.horizontal, 32)
+                .background(
+                    RoundedRectangle(cornerRadius: 24)
+                        .fill(Color("Sand 200"))
+                        .shadow(color: Color.black.opacity(0.2), radius: 20, x: 0, y: 10)
+                )
+                .padding(.horizontal, 24)
+                
+                Spacer()
+                
+                // Action buttons - anchored near bottom
+                VStack(spacing: 16) {
+                    NavigationLink(destination: FlashcardPracticeView()) {
+                        Text("Flashcards")
+                            .font(.title)
+                            .fontWeight(.bold)
+                            .foregroundColor(Color("Sand 100"))
+                            .padding(.horizontal, 40)
+                            .padding(.vertical, 24)
+                            .frame(maxWidth: 400)
+                            .background(Color("Blue 700"))
+                            .cornerRadius(16)
+                            .shadow(
+                                color: Color("Blue 700").opacity(0.3),
+                                radius: 12,
+                                x: 0,
+                                y: 6
+                            )
                     }
                     
                     NavigationLink(destination: CharacterSetsView()) {
                         Text("Set Characters")
                             .font(.title3)
+                            .fontWeight(.medium)
                             .foregroundColor(Color("Blue 900"))
                             .padding(.horizontal, 24)
-                            .padding(.vertical, 14)
+                            .padding(.vertical, 12)
+                            .frame(maxWidth: 280)
                             .background(Color.white)
-                            .cornerRadius(10)
-                            .shadow(color: Color.black.opacity(0.1), radius: 4, x: 0, y: 2)
+                            .cornerRadius(12)
+                            .shadow(
+                                color: Color.black.opacity(0.1),
+                                radius: 6,
+                                x: 0,
+                                y: 3
+                            )
                     }
-                    
-                    Spacer()
                 }
+                .padding(.horizontal, 24)
+                .padding(.bottom, 220)
             }
         }
-    }
-}
-
-struct HomeView_Previews: PreviewProvider {
-    static var previews: some View {
-        NavigationStack { HomeView() }
-            .environmentObject(LearningSetsStore())
     }
 }
