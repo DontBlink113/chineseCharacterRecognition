@@ -5,18 +5,23 @@ import QuartzCore
 private struct VariableWidthStrokeView: View {
     let stroke: Stroke
     let color: Color
+    let speedSensitivity: Double
+    let pressureSensitivity: Double
+    let sizeFactor: Double
     
     var body: some View {
         Canvas { context, _ in
             let pts = stroke.displayPoints
             guard !pts.isEmpty else { return }
             func widthFor(_ pressure: CGFloat, _ speed: CGFloat) -> CGFloat {
-                let minW: CGFloat = 8.0
-                let maxW: CGFloat = 28.0
-                let v0: CGFloat = 1500.0 // characteristic speed (pts/sec)
+                let minW: CGFloat = 8.0 * CGFloat(sizeFactor)
+                let maxW: CGFloat = 28.0 * CGFloat(sizeFactor)
+                let baseV0: CGFloat = 1500.0
+                let v0: CGFloat = baseV0 / max(0.1, CGFloat(speedSensitivity))
                 let v = max(0.0, speed)
                 let factor = 1.0 / (1.0 + v / v0)
-                return minW + (maxW - minW) * pressure * factor
+                let pEff = max(0.0, min(1.0, pressure * CGFloat(pressureSensitivity)))
+                return minW + (maxW - minW) * pEff * factor
             }
             if pts.count == 1 {
                 let w = widthFor(pts[0].pressure, pts[0].speed)
@@ -115,9 +120,12 @@ struct FlashcardPracticeView: View {
     
     // Tunable parameters (baseline algorithm)
     @State private var showSettings: Bool = false
-    @AppStorage("boundingBoxSize") private var boundingBoxSize: Double = 0.8  // Persisted size of guide box
-    @AppStorage("secondsPerStroke") private var secondsPerStroke: Double = 0.6  // Persisted animation speed
+    @AppStorage("boundingBoxSize") private var boundingBoxSize: Double = 0.5  // Persisted size of guide box
+    @AppStorage("secondsPerStroke") private var secondsPerStroke: Double = 1  // Persisted animation speed
     @AppStorage("errorThreshold") private var errorThreshold: Double = 0.35  // Sensitivity (Fréchet error threshold)
+    @AppStorage("strokeSpeedSensitivity") private var strokeSpeedSensitivity: Double = 1.5  // >1 = more speed influence
+    @AppStorage("strokePressureSensitivity") private var strokePressureSensitivity: Double = 1.5  // >1 = more pressure influence
+    @AppStorage("strokeSizeFactor") private var strokeSizeFactor: Double = 1.5  // overall size scale
     @State private var replayNonce: Int = 0  // Changing this replays the animation
     @State private var perfectStreakCount: Int = 0
     @State private var sessionAttempted: Set<Int> = []
@@ -429,7 +437,10 @@ struct FlashcardPracticeView: View {
                                                                 canvasSize: size,
                                                                 totalDuration: duration,
                                                                 replayNonce: replayNonce,
-                                                                pause: showSettings
+                                                                pause: showSettings,
+                                                                speedSensitivity: strokeSpeedSensitivity,
+                                                                pressureSensitivity: strokePressureSensitivity,
+                                                                sizeFactor: strokeSizeFactor
                                                             )
                                                             .id(replayNonce)
                                                         }
@@ -533,7 +544,10 @@ struct FlashcardPracticeView: View {
                                                         canvasSize: size,
                                                         totalDuration: duration,
                                                         replayNonce: replayNonce,
-                                                        pause: showSettings
+                                                        pause: showSettings,
+                                                        speedSensitivity: strokeSpeedSensitivity,
+                                                        pressureSensitivity: strokePressureSensitivity,
+                                                        sizeFactor: strokeSizeFactor
                                                     )
                                                     .id(replayNonce)
                                                 }
@@ -811,10 +825,22 @@ struct FlashcardPracticeView: View {
                 }
             
             ForEach(viewModel.currentCharacter.strokes, id: \.id) { stroke in
-                VariableWidthStrokeView(stroke: stroke, color: Color.black)
+                VariableWidthStrokeView(
+                    stroke: stroke,
+                    color: Color.black,
+                    speedSensitivity: strokeSpeedSensitivity,
+                    pressureSensitivity: strokePressureSensitivity,
+                    sizeFactor: strokeSizeFactor
+                )
             }
             if let live = viewModel.currentStroke {
-                VariableWidthStrokeView(stroke: live, color: Color.black.opacity(0.8))
+                VariableWidthStrokeView(
+                    stroke: live,
+                    color: Color.black.opacity(0.8),
+                    speedSensitivity: strokeSpeedSensitivity,
+                    pressureSensitivity: strokePressureSensitivity,
+                    sizeFactor: strokeSizeFactor
+                )
             }
         }
         .contentShape(Rectangle())
@@ -855,12 +881,14 @@ struct FlashcardPracticeView: View {
                         let pts = stroke.displayPoints
                         guard !pts.isEmpty else { return }
                         func widthFor(_ pressure: CGFloat, _ speed: CGFloat) -> CGFloat {
-                            let minW: CGFloat = 8.0
-                            let maxW: CGFloat = 28.0
-                            let v0: CGFloat = 1500.0
+                            let minW: CGFloat = 8.0 * CGFloat(strokeSizeFactor)
+                            let maxW: CGFloat = 28.0 * CGFloat(strokeSizeFactor)
+                            let baseV0: CGFloat = 1500.0
+                            let v0: CGFloat = baseV0 / max(0.1, CGFloat(strokeSpeedSensitivity))
                             let v = max(0.0, speed)
                             let factor = 1.0 / (1.0 + v / v0)
-                            return minW + (maxW - minW) * pressure * factor
+                            let pEff = max(0.0, min(1.0, pressure * CGFloat(strokePressureSensitivity)))
+                            return minW + (maxW - minW) * pEff * factor
                         }
                         if pts.count == 1 {
                             let w = widthFor(pts[0].pressure, pts[0].speed)
@@ -1184,6 +1212,48 @@ struct FlashcardPracticeView: View {
                     Slider(value: $errorThreshold, in: 0.25...0.40, step: 0.01)
                         .accentColor(Color("Blue 700"))
                 }
+
+                // Stroke width controls
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack {
+                        Text("Stroke Size")
+                            .font(.subheadline)
+                        Spacer()
+                        Text(String(format: "%.2fx", strokeSizeFactor))
+                            .font(.subheadline.monospacedDigit())
+                            .foregroundColor(Color("Blue 700"))
+                    }
+                    Slider(value: $strokeSizeFactor, in: 0.5...2.0, step: 0.05)
+                        .accentColor(Color("Blue 700"))
+                }
+
+                // Pressure sensitivity
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack {
+                        Text("Pressure Sensitivity")
+                            .font(.subheadline)
+                        Spacer()
+                        Text(String(format: "%.2fx", strokePressureSensitivity))
+                            .font(.subheadline.monospacedDigit())
+                            .foregroundColor(Color("Blue 700"))
+                    }
+                    Slider(value: $strokePressureSensitivity, in: 0.25...2.0, step: 0.05)
+                        .accentColor(Color("Blue 700"))
+                }
+
+                // Speed sensitivity
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack {
+                        Text("Speed Sensitivity")
+                            .font(.subheadline)
+                        Spacer()
+                        Text(String(format: "%.2fx", strokeSpeedSensitivity))
+                            .font(.subheadline.monospacedDigit())
+                            .foregroundColor(Color("Blue 700"))
+                    }
+                    Slider(value: $strokeSpeedSensitivity, in: 0.25...3.0, step: 0.05)
+                        .accentColor(Color("Blue 700"))
+                }
             }
         }
         .padding(16)
@@ -1214,6 +1284,9 @@ struct FlashcardPracticeView: View {
         boundingBoxSize = 0.8
         secondsPerStroke = 0.5
         errorThreshold = 0.3
+        strokeSpeedSensitivity = 1.0
+        strokePressureSensitivity = 1.0
+        strokeSizeFactor = 1.0
     }
 
     private func nextCard() {
@@ -1521,6 +1594,9 @@ struct ReferenceStrokeMaskAnimationView: UIViewRepresentable {
     let pause: Bool
     let debug: Bool = false
     let debugShowBounds: Bool = false
+    let speedSensitivity: Double
+    let pressureSensitivity: Double
+    let sizeFactor: Double
     
     func makeUIView(context: Context) -> ReferenceMaskAnimationContainerView {
         let view = ReferenceMaskAnimationContainerView()
@@ -1540,7 +1616,10 @@ struct ReferenceStrokeMaskAnimationView: UIViewRepresentable {
             replayNonce: replayNonce,
             pause: pause,
             debug: debug,
-            debugShowBounds: debugShowBounds
+            debugShowBounds: debugShowBounds,
+            speedSensitivity: speedSensitivity,
+            pressureSensitivity: pressureSensitivity,
+            sizeFactor: sizeFactor
         )
     }
 }
@@ -1558,7 +1637,7 @@ final class ReferenceMaskAnimationContainerView: UIView {
     private var maskLayers: [CAShapeLayer] = []
     private var isPaused: Bool = false
     
-    func renderAndAnimate(referenceStrokes: [ReferenceStroke], userStrokes: [Stroke], strokeResults: [StrokeAnalysisResult], originalCanvasSize: CGFloat, boundingBox: CGRect?, canvasSize: CGFloat, totalDuration: Double, replayNonce: Int, pause: Bool, debug: Bool, debugShowBounds: Bool) {
+    func renderAndAnimate(referenceStrokes: [ReferenceStroke], userStrokes: [Stroke], strokeResults: [StrokeAnalysisResult], originalCanvasSize: CGFloat, boundingBox: CGRect?, canvasSize: CGFloat, totalDuration: Double, replayNonce: Int, pause: Bool, debug: Bool, debugShowBounds: Bool, speedSensitivity: Double, pressureSensitivity: Double, sizeFactor: Double) {
         guard !referenceStrokes.isEmpty else { return }
         layer.masksToBounds = false
 
@@ -1613,7 +1692,7 @@ final class ReferenceMaskAnimationContainerView: UIView {
                     outlineLayer.lineWidth = 0
                     // Replace existing segment sublayers
                     outlineLayer.sublayers?.forEach { $0.removeFromSuperlayer() }
-                    let segs = buildSegmentSublayers(stroke: userStrokes[uIdx], canvasSize: canvasSize, bbox: boundingBox, color: strokeUIColor)
+                    let segs = buildSegmentSublayers(stroke: userStrokes[uIdx], canvasSize: canvasSize, bbox: boundingBox, color: strokeUIColor, speedSensitivity: speedSensitivity, pressureSensitivity: pressureSensitivity, sizeFactor: sizeFactor)
                     segs.forEach { outlineLayer.addSublayer($0) }
 
                     // Mask follows the user's median path for reveal
@@ -1623,7 +1702,7 @@ final class ReferenceMaskAnimationContainerView: UIView {
                     // Ensure mask width is large enough to cover the thickest outline
                     if let bb = boundingBox, bb.width > 0, bb.height > 0 {
                         let widthScale = canvasSize / max(bb.width, bb.height)
-                        let maxW: CGFloat = 28.0
+                        let maxW: CGFloat = 28.0 * CGFloat(sizeFactor)
                         maskLayer.lineWidth = max(1, widthScale * maxW * 2.2)
                     }
                     maskLayer.lineCap = .round
@@ -1664,7 +1743,7 @@ final class ReferenceMaskAnimationContainerView: UIView {
                 outlineLayer.fillColor = nil
                 outlineLayer.strokeColor = nil
                 outlineLayer.lineWidth = 0
-                let segs = buildSegmentSublayers(stroke: userStrokes[uIdx], canvasSize: canvasSize, bbox: boundingBox, color: strokeUIColor)
+                let segs = buildSegmentSublayers(stroke: userStrokes[uIdx], canvasSize: canvasSize, bbox: boundingBox, color: strokeUIColor, speedSensitivity: speedSensitivity, pressureSensitivity: pressureSensitivity, sizeFactor: sizeFactor)
                 segs.forEach { outlineLayer.addSublayer($0) }
             } else {
                 outlineLayer.path = outlinePath.cgPath
@@ -1693,7 +1772,7 @@ final class ReferenceMaskAnimationContainerView: UIView {
             var lw: CGFloat
             if let _ = refToUser[refIndex], let bb = boundingBox, bb.width > 0, bb.height > 0 {
                 let widthScale = canvasSize / max(bb.width, bb.height)
-                let maxUserWidth: CGFloat = 28.0
+                let maxUserWidth: CGFloat = 28.0 * CGFloat(sizeFactor)
                 let safety: CGFloat = 2.2
                 lw = max(1, maxUserWidth * widthScale * safety)
             } else {
@@ -1865,7 +1944,7 @@ final class ReferenceMaskAnimationContainerView: UIView {
     }
     
     // Build CAShapeLayer sublayers for each consecutive point pair with per-segment variable widths (round caps/joins)
-    private func buildSegmentSublayers(stroke: Stroke, canvasSize: CGFloat, bbox: CGRect?, color: UIColor) -> [CAShapeLayer] {
+    private func buildSegmentSublayers(stroke: Stroke, canvasSize: CGFloat, bbox: CGRect?, color: UIColor, speedSensitivity: Double, pressureSensitivity: Double, sizeFactor: Double) -> [CAShapeLayer] {
         var pts = stroke.displayPoints
         if pts.isEmpty { pts = stroke.points }
         guard pts.count > 0 else { return [] }
@@ -1880,14 +1959,16 @@ final class ReferenceMaskAnimationContainerView: UIView {
         }
 
         func widthFor(_ a: StrokePoint, _ b: StrokePoint) -> CGFloat {
-            let pressure = max(0, min(1, (a.pressure + b.pressure) * 0.5))
+            let pressureRaw = max(0, min(1, (a.pressure + b.pressure) * 0.5))
             let speed = max(0.001, (a.speed + b.speed) * 0.5)
-            let minW: CGFloat = 8.0
-            let maxW: CGFloat = 28.0
-            let v0: CGFloat = 1500.0
+            let minW: CGFloat = 8.0 * CGFloat(sizeFactor)
+            let maxW: CGFloat = 28.0 * CGFloat(sizeFactor)
+            let baseV0: CGFloat = 1500.0
+            let v0: CGFloat = baseV0 / max(0.1, CGFloat(speedSensitivity))
             let v = speed
             let factor = 1.0 / (1.0 + v / v0)
-            return (minW + (maxW - minW) * pressure * factor)
+            let pEff = max(0.0, min(1.0, pressureRaw * CGFloat(pressureSensitivity)))
+            return (minW + (maxW - minW) * pEff * factor)
         }
 
         var layers: [CAShapeLayer] = []
