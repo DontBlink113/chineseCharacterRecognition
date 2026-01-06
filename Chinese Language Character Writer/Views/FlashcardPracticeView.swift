@@ -2,6 +2,99 @@ import SwiftUI
 import UIKit
 import QuartzCore
 
+private struct VariableWidthStrokeView: View {
+    let stroke: Stroke
+    let color: Color
+    
+    var body: some View {
+        Canvas { context, _ in
+            let pts = stroke.displayPoints
+            guard !pts.isEmpty else { return }
+            func widthFor(_ pressure: CGFloat, _ speed: CGFloat) -> CGFloat {
+                let minW: CGFloat = 8.0
+                let maxW: CGFloat = 28.0
+                let v0: CGFloat = 1500.0 // characteristic speed (pts/sec)
+                let v = max(0.0, speed)
+                let factor = 1.0 / (1.0 + v / v0)
+                return minW + (maxW - minW) * pressure * factor
+            }
+            if pts.count == 1 {
+                let w = widthFor(pts[0].pressure, pts[0].speed)
+                let p = pts[0].location
+                let rect = CGRect(x: p.x - w/2, y: p.y - w/2, width: w, height: w)
+                context.fill(Path(ellipseIn: rect), with: .color(color))
+            } else {
+                var prevW: CGFloat = 0
+                for i in 1..<pts.count {
+                    let p0 = pts[i-1]
+                    let p1 = pts[i]
+                    let speed = max(0.001, (p0.speed + p1.speed) * 0.5)
+                    let pressure = (p0.pressure + p1.pressure) * 0.5
+                    var w = widthFor(pressure, speed)
+                    if prevW > 0 { w = 0.7 * prevW + 0.3 * w }
+                    prevW = w
+                    var seg = Path()
+                    seg.move(to: p0.location)
+                    seg.addLine(to: p1.location)
+                    context.stroke(seg, with: .color(color), style: StrokeStyle(lineWidth: w, lineCap: .round, lineJoin: .round))
+                }
+            }
+        }
+    }
+}
+
+private struct TouchCaptureView: UIViewRepresentable {
+    var onBegan: (CGPoint, CGFloat) -> Void
+    var onMoved: (CGPoint, CGFloat) -> Void
+    var onEnded: () -> Void
+    
+    class TouchView: UIView {
+        var onBegan: ((CGPoint, CGFloat) -> Void)?
+        var onMoved: ((CGPoint, CGFloat) -> Void)?
+        var onEnded: (() -> Void)?
+        
+        override init(frame: CGRect) {
+            super.init(frame: frame)
+            isMultipleTouchEnabled = false
+            backgroundColor = .clear
+        }
+        required init?(coder: NSCoder) { super.init(coder: coder) }
+        
+        override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) {
+            guard let t = touches.first else { return }
+            let p = t.type == .pencil ? (t.maximumPossibleForce > 0 ? t.force / t.maximumPossibleForce : 1.0) : 1.0
+            let loc = t.location(in: self)
+            onBegan?(loc, max(0.0, min(1.0, p)))
+        }
+        override func touchesMoved(_ touches: Set<UITouch>, with event: UIEvent?) {
+            guard let t = touches.first else { return }
+            let p = t.type == .pencil ? (t.maximumPossibleForce > 0 ? t.force / t.maximumPossibleForce : 1.0) : 1.0
+            let loc = t.location(in: self)
+            onMoved?(loc, max(0.0, min(1.0, p)))
+        }
+        override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent?) {
+            onEnded?()
+        }
+        override func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent?) {
+            onEnded?()
+        }
+    }
+    
+    func makeUIView(context: Context) -> TouchView {
+        let v = TouchView()
+        v.onBegan = onBegan
+        v.onMoved = onMoved
+        v.onEnded = onEnded
+        return v
+    }
+    
+    func updateUIView(_ uiView: TouchView, context: Context) {
+        uiView.onBegan = onBegan
+        uiView.onMoved = onMoved
+        uiView.onEnded = onEnded
+    }
+}
+
 struct FlashcardPracticeView: View {
     @EnvironmentObject var store: LearningSetsStore
     @StateObject private var viewModel = DrawingViewModel()
@@ -717,45 +810,34 @@ struct FlashcardPracticeView: View {
                     }
                 }
             
-            // Ink for completed strokes (draws one StrokePath for each stroke)
             ForEach(viewModel.currentCharacter.strokes, id: \.id) { stroke in
-                StrokePath(stroke: stroke)
-                    .stroke(
-                        Color.black,
-                        style: StrokeStyle(
-                            lineWidth: 12,
-                            lineCap: .round,
-                            lineJoin: .round
-                        )
-                    )
+                VariableWidthStrokeView(stroke: stroke, color: Color.black)
             }
-            // Ink for live stroke
             if let live = viewModel.currentStroke {
-                StrokePath(stroke: live)
-                    .stroke(
-                        Color.black.opacity(0.8),
-                        style: StrokeStyle(
-                            lineWidth: 12,
-                            lineCap: .round,
-                            lineJoin: .round
-                        )
-                    )
+                VariableWidthStrokeView(stroke: live, color: Color.black.opacity(0.8))
             }
         }
         .contentShape(Rectangle())
-        .gesture(
-            DragGesture(minimumDistance: 0)
-                .onChanged { value in
-                    let pt = value.location
+        .overlay(
+            TouchCaptureView(
+                onBegan: { pt, pressure in
                     if viewModel.currentStroke == nil {
-                        viewModel.beginStroke(at: pt)
+                        viewModel.beginStrokeWithPressure(at: pt, pressure: pressure)
                     } else {
-                        viewModel.continueStroke(at: pt)
+                        viewModel.continueStrokeWithPressure(at: pt, pressure: pressure)
                     }
-                }
-                .onEnded { _ in
+                },
+                onMoved: { pt, pressure in
+                    if viewModel.currentStroke == nil {
+                        viewModel.beginStrokeWithPressure(at: pt, pressure: pressure)
+                    } else {
+                        viewModel.continueStrokeWithPressure(at: pt, pressure: pressure)
+                    }
+                },
+                onEnded: {
                     viewModel.endStroke()
                 }
+            )
         )
     }
     
@@ -767,38 +849,43 @@ struct FlashcardPracticeView: View {
                 let normalizedStrokes = StrokeAnalyzer.normalizeUserStrokes(result.userStrokes, boundingBox: currentBoundingBox)
                 let size = min(geometry.size.width, geometry.size.height)
                 
-                // User strokes
                 ForEach(Array(normalizedStrokes.enumerated()), id: \.offset) { index, stroke in
-                        let strokeColor = getStrokeColor(for: index, result: result)
-                        
-                        // Scale stroke to fit the box
-                        Path { path in
-                            let points = stroke.displayPoints.map { point in
-                                CGPoint(
-                                    x: point.location.x * size,
-                                    y: point.location.y * size
-                                )
-                            }
-                            
-                            guard !points.isEmpty else { return }
-                            
-                            if points.count == 1 {
-                                path.addEllipse(in: CGRect(x: points[0].x - 2, y: points[0].y - 2, width: 4, height: 4))
-                            } else {
-                                path.move(to: points[0])
-                                for i in 1..<points.count {
-                                    path.addLine(to: points[i])
-                                }
+                    let strokeColor = getStrokeColor(for: index, result: result)
+                    Canvas { context, _ in
+                        let pts = stroke.displayPoints
+                        guard !pts.isEmpty else { return }
+                        func widthFor(_ pressure: CGFloat, _ speed: CGFloat) -> CGFloat {
+                            let minW: CGFloat = 8.0
+                            let maxW: CGFloat = 28.0
+                            let v0: CGFloat = 1500.0
+                            let v = max(0.0, speed)
+                            let factor = 1.0 / (1.0 + v / v0)
+                            return minW + (maxW - minW) * pressure * factor
+                        }
+                        if pts.count == 1 {
+                            let w = widthFor(pts[0].pressure, pts[0].speed)
+                            let p = CGPoint(x: pts[0].location.x * size, y: pts[0].location.y * size)
+                            let rect = CGRect(x: p.x - w/2, y: p.y - w/2, width: w, height: w)
+                            context.fill(Path(ellipseIn: rect), with: .color(strokeColor))
+                        } else {
+                            var prevW: CGFloat = 0
+                            for i in 1..<pts.count {
+                                let p0n = pts[i-1]
+                                let p1n = pts[i]
+                                let p0 = CGPoint(x: p0n.location.x * size, y: p0n.location.y * size)
+                                let p1 = CGPoint(x: p1n.location.x * size, y: p1n.location.y * size)
+                                let speed = max(0.001, (p0n.speed + p1n.speed) * 0.5)
+                                let pressure = (p0n.pressure + p1n.pressure) * 0.5
+                                var w = widthFor(pressure, speed)
+                                if prevW > 0 { w = 0.7 * prevW + 0.3 * w }
+                                prevW = w
+                                var seg = Path()
+                                seg.move(to: p0)
+                                seg.addLine(to: p1)
+                                context.stroke(seg, with: .color(strokeColor), style: StrokeStyle(lineWidth: w, lineCap: .round, lineJoin: .round))
                             }
                         }
-                        .stroke(
-                            strokeColor,
-                            style: StrokeStyle(
-                                lineWidth: 20,
-                                lineCap: .round,
-                                lineJoin: .round
-                            )
-                        )
+                    }
                 }
             }
         }
@@ -1285,7 +1372,6 @@ class StrokeAnimationContainerView: UIView {
     }
 }
 
-
 // New StrokePath shape used by drawingCanvas to render user strokes
 private struct StrokePath: Shape {
     let stroke: Stroke
@@ -1515,23 +1601,33 @@ final class ReferenceMaskAnimationContainerView: UIView {
                 let maskLayer = maskLayers[refIndex]
 
                 if let uIdx = refToUser[refIndex], uIdx < userStrokes.count {
-                    // Matched: use user path and stroke color (green/yellow)
+                    // Matched: render per-segment stroked sublayers for the user's stroke
                     let userPath = createUserPath(from: userStrokes[uIdx], canvasSize: canvasSize, bbox: boundingBox)
-                    outlineLayer.path = userPath.cgPath
-                    outlineLayer.fillColor = UIColor.clear.cgColor
                     let r = strokeResults[uIdx]
                     let strokeUIColor: UIColor = {
                         if let matchedRef = r.bestMatchIndex, matchedRef == uIdx { return UIColor.systemGreen } else { return UIColor.systemYellow }
                     }()
-                    outlineLayer.strokeColor = strokeUIColor.cgColor
-                    outlineLayer.lineWidth = max(16, canvasSize * 0.05)
-                    outlineLayer.lineCap = .round
-                    outlineLayer.lineJoin = .round
+                    outlineLayer.path = nil
+                    outlineLayer.fillColor = nil
+                    outlineLayer.strokeColor = nil
+                    outlineLayer.lineWidth = 0
+                    // Replace existing segment sublayers
+                    outlineLayer.sublayers?.forEach { $0.removeFromSuperlayer() }
+                    let segs = buildSegmentSublayers(stroke: userStrokes[uIdx], canvasSize: canvasSize, bbox: boundingBox, color: strokeUIColor)
+                    segs.forEach { outlineLayer.addSublayer($0) }
 
-                    // Mask follows user path
+                    // Mask follows the user's median path for reveal
                     maskLayer.path = userPath.cgPath
                     maskLayer.strokeColor = UIColor.black.cgColor
                     maskLayer.fillColor = UIColor.clear.cgColor
+                    // Ensure mask width is large enough to cover the thickest outline
+                    if let bb = boundingBox, bb.width > 0, bb.height > 0 {
+                        let widthScale = canvasSize / max(bb.width, bb.height)
+                        let maxW: CGFloat = 28.0
+                        maskLayer.lineWidth = max(1, widthScale * maxW * 2.2)
+                    }
+                    maskLayer.lineCap = .round
+                    maskLayer.lineJoin = .round
                 } else {
                     // Unmatched: revert to reference outline and median mask
                     let outlinePath = createBezierPath(from: ref.svgPath, canvasSize: canvasSize)
@@ -1554,22 +1650,22 @@ final class ReferenceMaskAnimationContainerView: UIView {
         outlineLayers.removeAll()
         maskLayers.removeAll()
         for (refIndex, ref) in referenceStrokes.enumerated() {
-            // 1) Full outline as filled shape
+            // 1) Full outline as filled shape (reference), or user's per-segment stroked sublayers when matched
             let outlineLayer = CAShapeLayer()
             let outlinePath = createBezierPath(from: ref.svgPath, canvasSize: canvasSize)
             // If this ref stroke is matched, draw the user's path directly (scaled from original canvas size, no inset)
             if let uIdx = refToUser[refIndex], uIdx < userStrokes.count {
                 let userPath = createUserPath(from: userStrokes[uIdx], canvasSize: canvasSize, bbox: boundingBox)
-                outlineLayer.path = userPath.cgPath
-                outlineLayer.fillColor = UIColor.clear.cgColor
                 let r = strokeResults[uIdx]
                 let strokeUIColor: UIColor = {
                     if let refIdx = r.bestMatchIndex, refIdx == uIdx { return UIColor.systemGreen } else { return UIColor.systemYellow }
                 }()
-                outlineLayer.strokeColor = strokeUIColor.cgColor
-                outlineLayer.lineWidth = max(16, canvasSize * 0.05)
-                outlineLayer.lineCap = .round
-                outlineLayer.lineJoin = .round
+                outlineLayer.path = nil
+                outlineLayer.fillColor = nil
+                outlineLayer.strokeColor = nil
+                outlineLayer.lineWidth = 0
+                let segs = buildSegmentSublayers(stroke: userStrokes[uIdx], canvasSize: canvasSize, bbox: boundingBox, color: strokeUIColor)
+                segs.forEach { outlineLayer.addSublayer($0) }
             } else {
                 outlineLayer.path = outlinePath.cgPath
                 outlineLayer.fillColor = UIColor.black.cgColor
@@ -1596,10 +1692,10 @@ final class ReferenceMaskAnimationContainerView: UIView {
             
             var lw: CGFloat
             if let _ = refToUser[refIndex], let bb = boundingBox, bb.width > 0, bb.height > 0 {
-                let scale = canvasSize / max(bb.width, bb.height)
-                let baseUserWidth: CGFloat = 12
-                let factor: CGFloat = 1.2
-                lw = max(1, baseUserWidth * scale * factor)
+                let widthScale = canvasSize / max(bb.width, bb.height)
+                let maxUserWidth: CGFloat = 28.0
+                let safety: CGFloat = 2.2
+                lw = max(1, maxUserWidth * widthScale * safety)
             } else {
                 var fallback = max(0.10 * canvasSize, 0.50 * maxDim)
                 if medLen < (0.08 * canvasSize) {
@@ -1768,6 +1864,74 @@ final class ReferenceMaskAnimationContainerView: UIView {
         return p
     }
     
+    // Build CAShapeLayer sublayers for each consecutive point pair with per-segment variable widths (round caps/joins)
+    private func buildSegmentSublayers(stroke: Stroke, canvasSize: CGFloat, bbox: CGRect?, color: UIColor) -> [CAShapeLayer] {
+        var pts = stroke.displayPoints
+        if pts.isEmpty { pts = stroke.points }
+        guard pts.count > 0 else { return [] }
+
+        func mapPoint(_ pt: CGPoint) -> CGPoint? {
+            if let bb = bbox, bb.width > 0, bb.height > 0 {
+                let nx = (pt.x - bb.minX) / bb.width
+                let ny = (pt.y - bb.minY) / bb.height
+                return CGPoint(x: nx * canvasSize, y: ny * canvasSize)
+            }
+            return nil
+        }
+
+        func widthFor(_ a: StrokePoint, _ b: StrokePoint) -> CGFloat {
+            let pressure = max(0, min(1, (a.pressure + b.pressure) * 0.5))
+            let speed = max(0.001, (a.speed + b.speed) * 0.5)
+            let minW: CGFloat = 8.0
+            let maxW: CGFloat = 28.0
+            let v0: CGFloat = 1500.0
+            let v = speed
+            let factor = 1.0 / (1.0 + v / v0)
+            return (minW + (maxW - minW) * pressure * factor)
+        }
+
+        var layers: [CAShapeLayer] = []
+        if pts.count == 1 {
+            if let p = mapPoint(pts[0].location) {
+                let w = max(1.0, widthFor(pts[0], pts[0]))
+                let r = w * 0.5
+                let circle = UIBezierPath(ovalIn: CGRect(x: p.x - r, y: p.y - r, width: w, height: w))
+                let l = CAShapeLayer()
+                l.path = circle.cgPath
+                l.fillColor = color.cgColor
+                l.strokeColor = nil
+                l.contentsScale = UIScreen.main.scale
+                layers.append(l)
+            }
+            return layers
+        }
+
+        var prevW: CGFloat = 0
+        for i in 0..<(pts.count - 1) {
+            let a = pts[i]
+            let b = pts[i + 1]
+            guard let pa = mapPoint(a.location), let pb = mapPoint(b.location) else { continue }
+            var w = widthFor(a, b)
+            if prevW > 0 { w = 0.7 * prevW + 0.3 * w }
+            prevW = w
+
+            let segPath = UIBezierPath()
+            segPath.move(to: pa)
+            segPath.addLine(to: pb)
+
+            let l = CAShapeLayer()
+            l.path = segPath.cgPath
+            l.strokeColor = color.cgColor
+            l.fillColor = UIColor.clear.cgColor
+            l.lineWidth = w
+            l.lineCap = .round
+            l.lineJoin = .round
+            l.contentsScale = UIScreen.main.scale
+            layers.append(l)
+        }
+        return layers
+    }
+    
 
     private func createUserPath(from stroke: Stroke, canvasSize: CGFloat, bbox: CGRect?) -> UIBezierPath {
         let p = UIBezierPath()
@@ -1793,6 +1957,108 @@ final class ReferenceMaskAnimationContainerView: UIView {
         p.move(to: scaled[0])
         for i in 1..<scaled.count { p.addLine(to: scaled[i]) }
         return p
+    }
+    
+    private func createVariableWidthOutlinePath(from stroke: Stroke, canvasSize: CGFloat, bbox: CGRect?) -> UIBezierPath {
+        // Prefer displayPoints for fidelity; fall back to points
+        var pts = stroke.displayPoints
+        if pts.isEmpty { pts = stroke.points }
+        // Single-point stroke => filled circle
+        if pts.count == 1 {
+            let sp = pts[0]
+            func widthFor(_ pressure: CGFloat, _ speed: CGFloat) -> CGFloat {
+                let minW: CGFloat = 8.0
+                let maxW: CGFloat = 28.0
+                let v0: CGFloat = 1500.0
+                let v = max(0.0, speed)
+                let factor = 1.0 / (1.0 + v / v0)
+                return minW + (maxW - minW) * pressure * factor
+            }
+            let p = UIBezierPath()
+            let c: CGPoint = {
+                if let bb = bbox, bb.width > 0, bb.height > 0 {
+                    let nx = (sp.location.x - bb.minX) / bb.width
+                    let ny = (sp.location.y - bb.minY) / bb.height
+                    return CGPoint(x: nx * canvasSize, y: ny * canvasSize)
+                } else {
+                    return CGPoint(x: sp.location.x * canvasSize, y: sp.location.y * canvasSize)
+                }
+            }()
+            let r = widthFor(sp.pressure, sp.speed) * 0.5
+            p.addArc(withCenter: c, radius: r, startAngle: 0, endAngle: .pi * 2, clockwise: true)
+            p.close()
+            return p
+        }
+
+        // Mapping helper
+        let mapPoint: (CGPoint) -> CGPoint = { pt in
+            if let bb = bbox, bb.width > 0, bb.height > 0 {
+                let nx = (pt.x - bb.minX) / bb.width
+                let ny = (pt.y - bb.minY) / bb.height
+                return CGPoint(x: nx * canvasSize, y: ny * canvasSize)
+            } else {
+                return CGPoint(x: pt.x * canvasSize, y: pt.y * canvasSize)
+            }
+        }
+        func widthFor(_ a: StrokePoint, _ b: StrokePoint) -> CGFloat {
+            let pressure = max(0, min(1, (a.pressure + b.pressure) * 0.5))
+            let speed = max(0.001, (a.speed + b.speed) * 0.5)
+            let minW: CGFloat = 8.0
+            let maxW: CGFloat = 28.0
+            let v0: CGFloat = 1500.0
+            let v = speed
+            let factor = 1.0 / (1.0 + v / v0)
+            return (minW + (maxW - minW) * pressure * factor)
+        }
+
+        // Build left/right outlines
+        var left: [CGPoint] = []
+        var right: [CGPoint] = []
+        var prevW: CGFloat = 0
+        for i in 0..<(pts.count - 1) {
+            let a = pts[i]
+            let b = pts[i + 1]
+            let pa = mapPoint(a.location)
+            let pb = mapPoint(b.location)
+            let dx = pb.x - pa.x
+            let dy = pb.y - pa.y
+            let len = max(1e-6, sqrt(dx*dx + dy*dy))
+            var w = widthFor(a, b)
+            if prevW > 0 { w = 0.7 * prevW + 0.3 * w }
+            prevW = w
+            let nx = -dy / len
+            let ny =  dx / len
+            let hx = nx * (w * 0.5)
+            let hy = ny * (w * 0.5)
+            let la = CGPoint(x: pa.x + hx, y: pa.y + hy)
+            let ra = CGPoint(x: pa.x - hx, y: pa.y - hy)
+            let lb = CGPoint(x: pb.x + hx, y: pb.y + hy)
+            let rb = CGPoint(x: pb.x - hx, y: pb.y - hy)
+            if i == 0 {
+                left.append(la)
+                right.append(ra)
+            }
+            left.append(lb)
+            right.append(rb)
+        }
+
+        // Create round caps at ends by appending circles (helps cover joins)
+        let outline = UIBezierPath()
+        if let first = left.first { outline.move(to: first) }
+        for i in 1..<left.count { outline.addLine(to: left[i]) }
+        for i in stride(from: right.count - 1, through: 0, by: -1) { outline.addLine(to: right[i]) }
+        outline.close()
+
+        // Add end caps
+        let startCenter = mapPoint(pts.first!.location)
+        let endCenter = mapPoint(pts.last!.location)
+        // Use first and last segment widths
+        let wStart = widthFor(pts[0], pts[1]) * 0.5
+        let wEnd = widthFor(pts[pts.count-2], pts[pts.count-1]) * 0.5
+        //outline.addArc(withCenter: startCenter, radius: wStart, startAngle: 0, endAngle: .pi * 2, clockwise: true)
+        // outline.addArc(withCenter: endCenter, radius: wEnd, startAngle: 0, endAngle: .pi * 2, clockwise: true)
+
+        return outline
     }
     private func scaleAndFlipPoint(_ point: CGPoint, canvasSize: CGFloat) -> CGPoint {
         // svgPath has been normalized to [0,1] in StrokeAnalyzer; draw within 80% inner box with 10% padding

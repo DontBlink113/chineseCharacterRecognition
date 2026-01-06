@@ -309,9 +309,14 @@ class StrokeAnalyzer {
             let normalizedPoints = stroke.points.map { point in
                 let x = (point.location.x - minX + offsetX) / scale
                 let y = (point.location.y - minY + offsetY) / scale
-                return StrokePoint(location: CGPoint(x: x, y: y), timestamp: point.timestamp)
+                return StrokePoint(location: CGPoint(x: x, y: y), timestamp: point.timestamp, pressure: point.pressure, speed: point.speed)
             }
-            normalizedStrokes.append(Stroke(id: stroke.id, points: normalizedPoints))
+            let normalizedDisplayPoints = stroke.displayPoints.map { point in
+                let x = (point.location.x - minX + offsetX) / scale
+                let y = (point.location.y - minY + offsetY) / scale
+                return StrokePoint(location: CGPoint(x: x, y: y), timestamp: point.timestamp, pressure: point.pressure, speed: point.speed)
+            }
+            normalizedStrokes.append(Stroke(id: stroke.id, points: normalizedPoints, displayPoints: normalizedDisplayPoints))
         }
         
         return normalizedStrokes

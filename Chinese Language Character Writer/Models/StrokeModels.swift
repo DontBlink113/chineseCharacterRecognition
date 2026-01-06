@@ -30,10 +30,14 @@ struct StrokeDirection: Equatable {
 struct StrokePoint: Equatable {
     let location: CGPoint
     let timestamp: TimeInterval
+    let pressure: CGFloat
+    let speed: CGFloat
     
-    init(location: CGPoint, timestamp: TimeInterval = Date().timeIntervalSince1970) {
+    init(location: CGPoint, timestamp: TimeInterval = Date().timeIntervalSince1970, pressure: CGFloat = 1.0, speed: CGFloat = 0.0) {
         self.location = location
         self.timestamp = timestamp
+        self.pressure = pressure
+        self.speed = speed
     }
 }
 
@@ -444,7 +448,13 @@ class DrawingViewModel: ObservableObject {
         let timeSinceLastPoint = now - lastPointTime
         
         // Always add to display points for smooth rendering
-        let displayPoint = StrokePoint(location: location, timestamp: now)
+        let lastDisplay = stroke.displayPoints.last
+        let dtDisplay = max(1e-3, now - (lastDisplay?.timestamp ?? now))
+        let dxDisplay = location.x - (lastDisplay?.location.x ?? location.x)
+        let dyDisplay = location.y - (lastDisplay?.location.y ?? location.y)
+        let rawSpeedDisplay = sqrt(dxDisplay * dxDisplay + dyDisplay * dyDisplay) / CGFloat(dtDisplay)
+        let smoothedSpeedDisplay = lastDisplay != nil ? (0.6 * (lastDisplay!.speed) + 0.4 * rawSpeedDisplay) : 0
+        let displayPoint = StrokePoint(location: location, timestamp: now, pressure: 1.0, speed: smoothedSpeedDisplay)
         stroke.addDisplayPoint(displayPoint)
         
         // Check if enough time has passed and point is far enough from last point for analysis
@@ -455,7 +465,13 @@ class DrawingViewModel: ObservableObject {
             lastPointTime = now
             lastPoint = location
             
-            let point = StrokePoint(location: location, timestamp: now)
+            let lastAnalysis = stroke.points.last
+            let dt = max(1e-3, now - (lastAnalysis?.timestamp ?? now))
+            let dx = location.x - (lastAnalysis?.location.x ?? location.x)
+            let dy = location.y - (lastAnalysis?.location.y ?? location.y)
+            let rawSpeed = sqrt(dx * dx + dy * dy) / CGFloat(dt)
+            let smoothedSpeed = lastAnalysis != nil ? (0.6 * (lastAnalysis!.speed) + 0.4 * rawSpeed) : 0
+            let point = StrokePoint(location: location, timestamp: now, pressure: 1.0, speed: smoothedSpeed)
             stroke.addPoint(point)
         }
         
@@ -467,6 +483,51 @@ class DrawingViewModel: ObservableObject {
         let dx = point2.x - point1.x
         let dy = point2.y - point1.y
         return dx * dx + dy * dy
+    }
+
+    /// Call this when a new touch begins with pressure
+    func beginStrokeWithPressure(at location: CGPoint, pressure: CGFloat) {
+        if !isInCharacterMode && !currentCharacter.strokes.isEmpty {
+            characters.append(currentCharacter)
+            currentCharacter = CharacterDrawing()
+        }
+        let now = Date().timeIntervalSince1970
+        lastPointTime = now
+        lastPoint = location
+        let p = max(0.0, min(1.0, pressure))
+        let point = StrokePoint(location: location, timestamp: now, pressure: p, speed: 0)
+        currentStroke = Stroke(points: [point])
+    }
+
+    /// Call this when the touch moves with pressure
+    func continueStrokeWithPressure(at location: CGPoint, pressure: CGFloat) {
+        guard var stroke = currentStroke else { return }
+        let now = Date().timeIntervalSince1970
+        let timeSinceLastPoint = now - lastPointTime
+        let p = max(0.0, min(1.0, pressure))
+        let lastDisplay = stroke.displayPoints.last
+        let dtDisplay = max(1e-3, now - (lastDisplay?.timestamp ?? now))
+        let dxDisplay = location.x - (lastDisplay?.location.x ?? location.x)
+        let dyDisplay = location.y - (lastDisplay?.location.y ?? location.y)
+        let rawSpeedDisplay = sqrt(dxDisplay * dxDisplay + dyDisplay * dyDisplay) / CGFloat(dtDisplay)
+        let smoothedSpeedDisplay = lastDisplay != nil ? (0.6 * (lastDisplay!.speed) + 0.4 * rawSpeedDisplay) : 0
+        let displayPoint = StrokePoint(location: location, timestamp: now, pressure: p, speed: smoothedSpeedDisplay)
+        stroke.addDisplayPoint(displayPoint)
+        if timeSinceLastPoint >= minimumTimeInterval,
+           let lastLocation = lastPoint,
+           distanceSquared(from: lastLocation, to: location) >= minimumDistanceSquared {
+            lastPointTime = now
+            lastPoint = location
+            let lastAnalysis = stroke.points.last
+            let dt = max(1e-3, now - (lastAnalysis?.timestamp ?? now))
+            let dx = location.x - (lastAnalysis?.location.x ?? location.x)
+            let dy = location.y - (lastAnalysis?.location.y ?? location.y)
+            let rawSpeed = sqrt(dx * dx + dy * dy) / CGFloat(dt)
+            let smoothedSpeed = lastAnalysis != nil ? (0.6 * (lastAnalysis!.speed) + 0.4 * rawSpeed) : 0
+            let point = StrokePoint(location: location, timestamp: now, pressure: p, speed: smoothedSpeed)
+            stroke.addPoint(point)
+        }
+        currentStroke = stroke
     }
     
     /// Call this when the touch ends
