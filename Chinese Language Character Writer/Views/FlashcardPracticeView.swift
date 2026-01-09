@@ -13,6 +13,7 @@ private struct VariableWidthStrokeView: View {
         Canvas { context, _ in
             let pts = stroke.displayPoints
             guard !pts.isEmpty else { return }
+            let isLikelyNonPencil = pts.allSatisfy { $0.pressure >= 0.999 }
             func widthFor(_ pressure: CGFloat, _ speed: CGFloat) -> CGFloat {
                 let minW: CGFloat = 8.0 * CGFloat(sizeFactor)
                 let maxW: CGFloat = 28.0 * CGFloat(sizeFactor)
@@ -21,7 +22,8 @@ private struct VariableWidthStrokeView: View {
                 let v = max(0.0, speed)
                 let factor = 1.0 / (1.0 + v / v0)
                 let pEff = max(0.0, min(1.0, pressure * CGFloat(pressureSensitivity)))
-                return minW + (maxW - minW) * pEff * factor
+                let base = minW + (maxW - minW) * pEff * factor
+                return base * (isLikelyNonPencil ? 0.5 : 1.0)
             }
             if pts.count == 1 {
                 let w = widthFor(pts[0].pressure, pts[0].speed)
@@ -117,15 +119,17 @@ struct FlashcardPracticeView: View {
     @State private var isPerfectCharacter: Bool = false
     @State private var canvasSize: CGFloat = 400  // Actual canvas size for bounding box calculation
     @State private var currentBoundingBox: CGRect? = nil  // Bounding box used for current analysis
+    @State private var drawingAreaSize: CGSize = .zero  // Full drawing area's size (may not be square)
     
     // Tunable parameters (baseline algorithm)
     @State private var showSettings: Bool = false
+    @State private var showHelpGuide: Bool = false
     @AppStorage("boundingBoxSize") private var boundingBoxSize: Double = 0.5  // Persisted size of guide box
     @AppStorage("secondsPerStroke") private var secondsPerStroke: Double = 1  // Persisted animation speed
-    @AppStorage("errorThreshold") private var errorThreshold: Double = 0.35  // Sensitivity (Fréchet error threshold)
+    @AppStorage("enableStrokeRemoval") private var enableStrokeRemoval: Bool = false  // Whether to mark bad strokes as unmatched
     @AppStorage("strokeSpeedSensitivity") private var strokeSpeedSensitivity: Double = 1.5  // >1 = more speed influence
     @AppStorage("strokePressureSensitivity") private var strokePressureSensitivity: Double = 1.5  // >1 = more pressure influence
-    @AppStorage("strokeSizeFactor") private var strokeSizeFactor: Double = 1.5  // overall size scale
+    @AppStorage("strokeSizeFactor") private var strokeSizeFactor: Double = 1  // overall size scale
     @State private var replayNonce: Int = 0  // Changing this replays the animation
     @State private var perfectStreakCount: Int = 0
     @State private var sessionAttempted: Set<Int> = []
@@ -296,10 +300,105 @@ struct FlashcardPracticeView: View {
     private var inSessionUI: some View {
         VStack(spacing: 0) {                    
                     // Top control bar
-                    HStack(spacing: 16) {
-                        if !showFeedback {
-                            Button(action: { _ = viewModel.undo() }) {
-                                Image(systemName: "arrow.uturn.backward")
+                    if horizontalSizeClass == .compact {
+                        VStack(alignment: .leading, spacing: 8) {
+                            HStack(spacing: 12) {
+                                if !showFeedback {
+                                    Button(action: { _ = viewModel.undo() }) {
+                                        Image(systemName: "arrow.uturn.backward")
+                                            .font(.callout)
+                                            .foregroundColor(Color("Blue 700"))
+                                            .frame(width: 34, height: 34)
+                                            .background(Color.white)
+                                            .clipShape(Circle())
+                                            .shadow(color: Color.black.opacity(0.1), radius: 4, x: 0, y: 2)
+                                    }
+                                    
+                                    Button(action: { viewModel.clear() }) {
+                                        Image(systemName: "trash")
+                                            .font(.callout)
+                                            .foregroundColor(.red)
+                                            .frame(width: 34, height: 34)
+                                            .background(Color.white)
+                                            .clipShape(Circle())
+                                            .shadow(color: Color.black.opacity(0.1), radius: 4, x: 0, y: 2)
+                                    }
+                                }
+                                Button(action: { 
+                                    withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
+                                        showSettings.toggle()
+                                    }
+                                }) {
+                                    Image(systemName: "slider.horizontal.3")
+                                        .font(.callout)
+                                        .foregroundColor(Color("Blue 700"))
+                                        .frame(width: 34, height: 34)
+                                        .background(showSettings ? Color("Blue 700").opacity(0.2) : Color.white)
+                                        .clipShape(Circle())
+                                        .shadow(color: Color.black.opacity(0.1), radius: 4, x: 0, y: 2)
+                                }
+                                Button(action: { showHelpGuide = true }) {
+                                    Image(systemName: "questionmark.circle")
+                                        .font(.callout)
+                                        .foregroundColor(Color("Blue 700"))
+                                        .frame(width: 34, height: 34)
+                                        .background(Color.white)
+                                        .clipShape(Circle())
+                                        .shadow(color: Color.black.opacity(0.1), radius: 4, x: 0, y: 2)
+                                }
+                                Spacer()
+                            }
+                            Text(currentPrompt)
+                                .font(.system(size: 22, weight: .semibold))
+                                .foregroundColor(Color("Blue 900"))
+                                .multilineTextAlignment(.center)
+                                .lineLimit(6)
+                                .minimumScaleFactor(0.6)
+                                .fixedSize(horizontal: false, vertical: true)
+                                .frame(maxWidth: .infinity, alignment: .center)
+                                .padding(.horizontal, 8)
+                        }
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 12)
+                        .background(Color(red: 0.68, green: 0.85, blue: 0.9).opacity(0.3))
+                    } else {
+                        HStack(spacing: 16) {
+                            if !showFeedback {
+                                Button(action: { _ = viewModel.undo() }) {
+                                    Image(systemName: "arrow.uturn.backward")
+                                        .font(.title3)
+                                        .foregroundColor(Color("Blue 700"))
+                                        .frame(width: 44, height: 44)
+                                        .background(Color.white)
+                                        .clipShape(Circle())
+                                        .shadow(color: Color.black.opacity(0.1), radius: 4, x: 0, y: 2)
+                                }
+                                
+                                Button(action: { viewModel.clear() }) {
+                                    Image(systemName: "trash")
+                                        .font(.title3)
+                                        .foregroundColor(.red)
+                                        .frame(width: 44, height: 44)
+                                        .background(Color.white)
+                                        .clipShape(Circle())
+                                        .shadow(color: Color.black.opacity(0.1), radius: 4, x: 0, y: 2)
+                                }
+                            }
+                            Button(action: { 
+                                withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
+                                    showSettings.toggle()
+                                }
+                            }) {
+                                Image(systemName: "slider.horizontal.3")
+                                    .font(.title3)
+                                    .foregroundColor(Color("Blue 700"))
+                                    .frame(width: 44, height: 44)
+                                    .background(showSettings ? Color("Blue 700").opacity(0.2) : Color.white)
+                                    .clipShape(Circle())
+                                    .shadow(color: Color.black.opacity(0.1), radius: 4, x: 0, y: 2)
+                            }
+                            Button(action: { showHelpGuide = true }) {
+                                Image(systemName: "questionmark.circle")
                                     .font(.title3)
                                     .foregroundColor(Color("Blue 700"))
                                     .frame(width: 44, height: 44)
@@ -308,55 +407,32 @@ struct FlashcardPracticeView: View {
                                     .shadow(color: Color.black.opacity(0.1), radius: 4, x: 0, y: 2)
                             }
                             
-                            Button(action: { viewModel.clear() }) {
-                                Image(systemName: "trash")
-                                    .font(.title3)
-                                    .foregroundColor(.red)
-                                    .frame(width: 44, height: 44)
-                                    .background(Color.white)
-                                    .clipShape(Circle())
-                                    .shadow(color: Color.black.opacity(0.1), radius: 4, x: 0, y: 2)
+                            Spacer()
+                            
+                            // Definition prompt - centered
+                            VStack(spacing: 8) {
+                                Text(currentPrompt)
+                                    .font(.system(size: horizontalSizeClass == .compact ? 18 : 24, weight: .medium))
+                                    .foregroundColor(Color("Blue 900"))
+                                    .multilineTextAlignment(.center)
+                                    .lineLimit(horizontalSizeClass == .compact ? 4 : 3)
+                                    .minimumScaleFactor(0.7)
                             }
-                        }
-                        Button(action: { 
-                            withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
-                                showSettings.toggle()
-                            }
-                        }) {
-                            Image(systemName: "slider.horizontal.3")
-                                .font(.title3)
-                                .foregroundColor(Color("Blue 700"))
+                            .padding(.horizontal, 16)
+                            
+                            Spacer()
+                            
+                            // Placeholder for symmetry
+                            Color.clear
                                 .frame(width: 44, height: 44)
-                                .background(showSettings ? Color("Blue 700").opacity(0.2) : Color.white)
-                                .clipShape(Circle())
-                                .shadow(color: Color.black.opacity(0.1), radius: 4, x: 0, y: 2)
+                            
+                            Color.clear
+                                .frame(width: 44, height: 44)
                         }
-                        
-                        Spacer()
-                        
-                        // Definition prompt - centered
-                        VStack(spacing: 8) {
-                            Text(currentPrompt)
-                                .font(.system(size: horizontalSizeClass == .compact ? 18 : 24, weight: .medium))
-                                .foregroundColor(Color("Blue 900"))
-                                .multilineTextAlignment(.center)
-                                .lineLimit(horizontalSizeClass == .compact ? 4 : 3)
-                                .minimumScaleFactor(0.7)
-                        }
-                        .padding(.horizontal, 16)
-                        
-                        Spacer()
-                        
-                        // Placeholder for symmetry
-                        Color.clear
-                            .frame(width: 44, height: 44)
-                        
-                        Color.clear
-                            .frame(width: 44, height: 44)
+                        .padding(.horizontal, 24)
+                        .padding(.vertical, 16)
+                        .background(Color(red: 0.68, green: 0.85, blue: 0.9).opacity(0.3))
                     }
-                    .padding(.horizontal, horizontalSizeClass == .compact ? 16 : 24)
-                    .padding(.vertical, horizontalSizeClass == .compact ? 12 : 16)
-                    .background(Color(red: 0.68, green: 0.85, blue: 0.9).opacity(0.3))
                     
                     // Settings shown in a separate sheet now; no inline panel here
                     HStack(spacing: 12) {
@@ -785,12 +861,22 @@ struct FlashcardPracticeView: View {
                         userStrokes: userStrokes,
                         character: currentCharacter,
                         boundingBox: bbox,
-                        errorThreshold: errorThreshold
+                        errorThreshold: enableStrokeRemoval ? 0.4 : Double.infinity
                     )
                     currentBoundingBox = bbox
                     checkIfPerfect()
                     // Rebuild once to ensure the hybrid uses updated matches
                     replayNonce += 1
+                }
+            }
+            .sheet(isPresented: $showHelpGuide) {
+                NavigationStack {
+                    helpGuideView
+                        .toolbar {
+                            ToolbarItem(placement: .confirmationAction) {
+                                Button("Done") { showHelpGuide = false }
+                            }
+                        }
                 }
             }
     }
@@ -816,13 +902,26 @@ struct FlashcardPracticeView: View {
                     if size > 0 {
                         canvasSize = size
                     }
+                    drawingAreaSize = geometry.size
                 }
                 .onChange(of: geometry.size) { newSize in
                     let size = min(newSize.width, newSize.height)
                     if size > 0 {
                         canvasSize = size
                     }
+                    drawingAreaSize = newSize
                 }
+            
+            // Calculate the bounding box for clipping
+            let fullW = geometry.size.width
+            let fullH = geometry.size.height
+            let square = min(fullW, fullH)
+            let letterboxX = (fullW - square) / 2
+            let letterboxY = (fullH - square) / 2
+            let boxSize = square * CGFloat(boundingBoxSize)
+            let boxMinX = letterboxX + (square - boxSize) / 2
+            let boxMinY = letterboxY + (square - boxSize) / 2
+            let drawingBounds = CGRect(x: boxMinX, y: boxMinY, width: boxSize, height: boxSize)
             
             ForEach(viewModel.currentCharacter.strokes, id: \.id) { stroke in
                 VariableWidthStrokeView(
@@ -833,6 +932,8 @@ struct FlashcardPracticeView: View {
                     sizeFactor: strokeSizeFactor
                 )
             }
+            .clipShape(Rectangle().path(in: drawingBounds))
+            
             if let live = viewModel.currentStroke {
                 VariableWidthStrokeView(
                     stroke: live,
@@ -841,6 +942,7 @@ struct FlashcardPracticeView: View {
                     pressureSensitivity: strokePressureSensitivity,
                     sizeFactor: strokeSizeFactor
                 )
+                .clipShape(Rectangle().path(in: drawingBounds))
             }
         }
         .contentShape(Rectangle())
@@ -880,6 +982,7 @@ struct FlashcardPracticeView: View {
                     Canvas { context, _ in
                         let pts = stroke.displayPoints
                         guard !pts.isEmpty else { return }
+                        let isLikelyNonPencil = pts.allSatisfy { $0.pressure >= 0.999 }
                         func widthFor(_ pressure: CGFloat, _ speed: CGFloat) -> CGFloat {
                             let minW: CGFloat = 8.0 * CGFloat(strokeSizeFactor)
                             let maxW: CGFloat = 28.0 * CGFloat(strokeSizeFactor)
@@ -888,7 +991,8 @@ struct FlashcardPracticeView: View {
                             let v = max(0.0, speed)
                             let factor = 1.0 / (1.0 + v / v0)
                             let pEff = max(0.0, min(1.0, pressure * CGFloat(strokePressureSensitivity)))
-                            return minW + (maxW - minW) * pEff * factor
+                            let base = minW + (maxW - minW) * pEff * factor
+                            return base * (isLikelyNonPencil ? 0.5 : 1.0)
                         }
                         if pts.count == 1 {
                             let w = widthFor(pts[0].pressure, pts[0].speed)
@@ -1021,7 +1125,7 @@ struct FlashcardPracticeView: View {
                 userStrokes: userStrokes,
                 character: currentCharacter,
                 boundingBox: currentBoundingBox,
-                errorThreshold: errorThreshold
+                errorThreshold: enableStrokeRemoval ? 0.5 : Double.infinity
             )
             showFeedback = true
             
@@ -1115,15 +1219,17 @@ struct FlashcardPracticeView: View {
     /// Calculate the bounding box for stroke normalization based on the visual guide box
     private func calculateBoundingBox(for strokes: [Stroke]) -> CGRect? {
         guard !strokes.isEmpty else { return nil }
-        
-        // Use the actual canvas size captured from GeometryReader
-        // Calculate the bounding box size and position (centered, matching the visual guide box)
-        let boxSize = canvasSize * CGFloat(boundingBoxSize)
-        let boxMinX = (canvasSize - boxSize) / 2
-        let boxMinY = (canvasSize - boxSize) / 2
-        
-        print("📦 Bounding box: canvas=\(canvasSize), boxSize=\(boxSize), origin=(\(boxMinX), \(boxMinY))")
-        
+        // The drawing view may not be square. The visual guide square is centered
+        // within the full drawing area. Compute its absolute origin accordingly.
+        let fullW = drawingAreaSize.width
+        let fullH = drawingAreaSize.height
+        let square = min(fullW, fullH)
+        let letterboxX = (fullW - square) / 2
+        let letterboxY = (fullH - square) / 2
+        let boxSize = square * CGFloat(boundingBoxSize)
+        let boxMinX = letterboxX + (square - boxSize) / 2
+        let boxMinY = letterboxY + (square - boxSize) / 2
+        print("📦 Bounding box: full=(\(fullW),\(fullH)), square=\(square), boxSize=\(boxSize), origin=(\(boxMinX), \(boxMinY))")
         return CGRect(x: boxMinX, y: boxMinY, width: boxSize, height: boxSize)
     }
     
@@ -1199,20 +1305,6 @@ struct FlashcardPracticeView: View {
                     Slider(value: $secondsPerStroke, in: 0.10...1.50, step: 0.05)
                         .accentColor(Color("Blue 700"))
                 }
-                // Sensitivity (Error Threshold)
-                VStack(alignment: .leading, spacing: 4) {
-                    HStack {
-                        Text("Error Tolerance")
-                            .font(.subheadline)
-                        Spacer()
-                        Text(String(format: "%.3f", errorThreshold))
-                            .font(.subheadline.monospacedDigit())
-                            .foregroundColor(Color("Blue 700"))
-                    }
-                    Slider(value: $errorThreshold, in: 0.25...0.40, step: 0.01)
-                        .accentColor(Color("Blue 700"))
-                }
-
                 // Stroke width controls
                 VStack(alignment: .leading, spacing: 4) {
                     HStack {
@@ -1254,6 +1346,15 @@ struct FlashcardPracticeView: View {
                     Slider(value: $strokeSpeedSensitivity, in: 0.25...3.0, step: 0.05)
                         .accentColor(Color("Blue 700"))
                 }
+
+                // Stroke Removal Toggle
+                HStack {
+                    Text("Remove Bad Strokes")
+                        .font(.subheadline)
+                    Spacer()
+                    Toggle("", isOn: $enableStrokeRemoval)
+                        .labelsHidden()
+                }
             }
         }
         .padding(16)
@@ -1270,6 +1371,27 @@ struct FlashcardPracticeView: View {
             ScrollView {
                 settingsPanel
                     .padding(.top, 12)
+                
+                // Help & Guide Link
+                NavigationLink(destination: helpGuideView) {
+                    HStack {
+                        Image(systemName: "questionmark.circle")
+                            .foregroundColor(Color("Blue 700"))
+                        Text("How to Use")
+                            .font(.subheadline)
+                            .foregroundColor(Color("Blue 900"))
+                        Spacer()
+                        Image(systemName: "chevron.right")
+                            .font(.caption)
+                            .foregroundColor(Color("Neutral 700"))
+                    }
+                    .padding(16)
+                    .background(Color.white.opacity(0.95))
+                    .cornerRadius(12)
+                    .shadow(color: Color.black.opacity(0.1), radius: 4, x: 0, y: 2)
+                    .padding(.horizontal, 24)
+                    .padding(.top, 16)
+                }
             }
             .navigationTitle("Settings")
             .toolbar {
@@ -1280,10 +1402,107 @@ struct FlashcardPracticeView: View {
         }
     }
     
+    // Help & Guide View
+    private var helpGuideView: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 24) {
+                // Overview Section
+                VStack(alignment: .leading, spacing: 12) {
+                    Label("Overview", systemImage: "info.circle.fill")
+                        .font(.title2.bold())
+                        .foregroundColor(Color("Blue 900"))
+                    
+                    Text("The purpose of Chinese Character Autograder is to help you learn new Chinese Characters and write them well! The app does this by reinforcing the strokes you draw correctly, and rejecting or adjusting the strokes that need work. Over time, this training will create excellence in your writing.")
+                        .font(.body)
+                        .foregroundColor(Color("Blue 900"))
+                }
+                
+                Divider()
+                
+                // How to Use Flashcards Section
+                VStack(alignment: .leading, spacing: 12) {
+                    Label("How to Use Flashcards", systemImage: "hand.draw.fill")
+                        .font(.title2.bold())
+                        .foregroundColor(Color("Blue 900"))
+                    
+                    VStack(alignment: .leading, spacing: 8) {
+                        helpStep(number: "1", text: "Select a learning set that has definitions")
+                        helpStep(number: "2", text: "Read the prompt and draw the character")
+                        helpStep(number: "3", text: "Tap 'Check' to see your feedback")
+                        helpStep(number: "4", text: "Study your mistakes and successes, then click 'Back to Draw' to retry, or click 'Next' to continue")
+                        helpStep(number: "5", text: "Adjust your settings to change the font of your stroke, whether strokes should be marked incorrect or not, the size of the bounding box, etc.")
+                    }
+                }
+                
+                Divider()
+                
+                // Feedback Colors Section
+                VStack(alignment: .leading, spacing: 12) {
+                    Label("Understanding Feedback", systemImage: "paintpalette.fill")
+                        .font(.title2.bold())
+                        .foregroundColor(Color("Blue 900"))
+                    
+                    VStack(alignment: .leading, spacing: 8) {
+                        HStack(spacing: 12) {
+                            Circle().fill(Color.green).frame(width: 16, height: 16)
+                            Text("**Green** — Stroke is correct")
+                                .font(.subheadline)
+                        }
+                        HStack(spacing: 12) {
+                            Circle().fill(Color.yellow).frame(width: 16, height: 16)
+                            Text("**Yellow** — Stroke is in the wrong order")
+                                .font(.subheadline)
+                        }
+                        HStack(spacing: 12) {
+                            Circle().fill(Color.red).frame(width: 16, height: 16)
+                            Text("**Red** — Stroke doesn't match any true strokes")
+                                .font(.subheadline)
+                        }
+                    }
+                    .foregroundColor(Color("Blue 900"))
+                }
+                
+                Divider()
+                
+                // Other Notes Section
+                VStack(alignment: .leading, spacing: 12) {
+                    Label("Other Notes", systemImage: "lightbulb.fill")
+                        .font(.title2.bold())
+                        .foregroundColor(Color("Blue 900"))
+                    
+                    Text("Strokes are matched based on their position relative to the bounding box that you draw in, and their similarity to the true stroke. This means that you must draw the character to the scale of the box. For example, if you draw a full character only in the upper left corner of a box, there will be mismatches.")
+                        .font(.subheadline)
+                        .foregroundColor(Color("Blue 900"))
+                }
+                
+                Spacer(minLength: 40)
+            }
+            .padding(20)
+        }
+        .background(Color(red: 0.68, green: 0.85, blue: 0.9).opacity(0.3))
+        .navigationTitle("How to Use")
+        .navigationBarTitleDisplayMode(.large)
+    }
+    
+    // Helper views for the guide
+    private func helpStep(number: String, text: String) -> some View {
+        HStack(alignment: .top, spacing: 12) {
+            Text(number)
+                .font(.caption.bold())
+                .foregroundColor(.white)
+                .frame(width: 22, height: 22)
+                .background(Color("Blue 700"))
+                .clipShape(Circle())
+            Text(text)
+                .font(.subheadline)
+                .foregroundColor(Color("Blue 900"))
+        }
+    }
+    
     private func resetParameters() {
         boundingBoxSize = 0.8
         secondsPerStroke = 0.5
-        errorThreshold = 0.3
+        enableStrokeRemoval = false
         strokeSpeedSensitivity = 1.0
         strokePressureSensitivity = 1.0
         strokeSizeFactor = 1.0
@@ -1958,6 +2177,7 @@ final class ReferenceMaskAnimationContainerView: UIView {
             return nil
         }
 
+        let isLikelyNonPencil = pts.allSatisfy { $0.pressure >= 0.999 }
         func widthFor(_ a: StrokePoint, _ b: StrokePoint) -> CGFloat {
             let pressureRaw = max(0, min(1, (a.pressure + b.pressure) * 0.5))
             let speed = max(0.001, (a.speed + b.speed) * 0.5)
@@ -1968,7 +2188,8 @@ final class ReferenceMaskAnimationContainerView: UIView {
             let v = speed
             let factor = 1.0 / (1.0 + v / v0)
             let pEff = max(0.0, min(1.0, pressureRaw * CGFloat(pressureSensitivity)))
-            return (minW + (maxW - minW) * pEff * factor)
+            let base = (minW + (maxW - minW) * pEff * factor)
+            return base * (isLikelyNonPencil ? 0.5 : 1.0)
         }
 
         var layers: [CAShapeLayer] = []

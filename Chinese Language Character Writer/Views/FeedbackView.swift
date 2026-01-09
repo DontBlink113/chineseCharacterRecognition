@@ -4,7 +4,7 @@ struct FeedbackView: View {
     @State private var copied = false
     
     private var feedbackEmail: String {
-        (Bundle.main.object(forInfoDictionaryKey: "FeedbackEmail") as? String) ?? "keanehaesle@gmail.com"
+        (Bundle.main.object(forInfoDictionaryKey: "FeedbackEmail") as? String) ?? "keanecharacterwriter@gmail.com"
     }
     
     var body: some View {

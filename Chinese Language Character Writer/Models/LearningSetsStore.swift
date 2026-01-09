@@ -93,11 +93,29 @@ final class LearningSetsStore: ObservableObject {
            let decoded = try? JSONDecoder().decode([LearningSet].self, from: data) {
             self.sets = decoded
         }
+        
+        // Create default "Example Set" if no sets exist
+        if sets.isEmpty {
+            createDefaultExampleSet()
+        }
+        
         if let idStr = UserDefaults.standard.string(forKey: activeKey), let id = UUID(uuidString: idStr) {
             self.activeSetId = id
         } else {
             self.activeSetId = sets.first?.id
         }
+    }
+    
+    private func createDefaultExampleSet() {
+        let exampleCards = [
+            FlashcardItem(hanzi: "我", definition: "I"),
+            FlashcardItem(hanzi: "你", definition: "you"),
+            FlashcardItem(hanzi: "他", definition: "him"),
+            FlashcardItem(hanzi: "她", definition: "her")
+        ]
+        let chars = exampleCards.map { $0.hanzi }.joined()
+        let exampleSet = LearningSet(name: "Example Set", characters: chars, items: exampleCards)
+        sets.append(exampleSet)
     }
 }
 

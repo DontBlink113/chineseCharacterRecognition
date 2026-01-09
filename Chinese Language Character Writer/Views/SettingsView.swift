@@ -5,7 +5,7 @@ struct SettingsView: View {
         List {
             Section(header: Text("About")) {
                 HStack {
-                    Text("App Version")
+                    Text("App Version 1.0.2")
                     Spacer()
                     Text(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0")
                         .foregroundColor(Color("Neutral 700"))
