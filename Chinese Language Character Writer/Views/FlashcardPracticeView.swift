@@ -1938,7 +1938,13 @@ struct FlashcardPracticeView: View {
     // MARK: - Session logic
 
     private func startSession() {
-        guard !flashcardItems.isEmpty else { return }
+        print("🎯 Start Practice clicked - flashcardItems count: \(flashcardItems.count)")
+        print("🎯 Selected sets: \(selectedSetIds)")
+        print("🎯 Scheduling mode: \(schedulingMode)")
+        guard !flashcardItems.isEmpty else {
+            print("❌ Cannot start - flashcardItems is empty!")
+            return
+        }
         inSession              = true
         showEndPage            = false
         reviewedCardIds        = []
@@ -1973,7 +1979,7 @@ struct FlashcardPracticeView: View {
         guard !flashcardItems.isEmpty else { return }
         resetDrawState()
         resetFlipState()
-        if shuffle {
+        if schedulingMode == .normalShuffle {
             currentIndex = Int.random(in: 0..<flashcardItems.count)
         } else {
             currentIndex = (currentIndex + 1) % flashcardItems.count
@@ -2031,7 +2037,7 @@ struct FlashcardPracticeView: View {
 
     private func restartSet() {
         resetDrawState()
-        if shuffle { currentIndex = Int.random(in: 0..<flashcardItems.count) } else { currentIndex = 0 }
+        if schedulingMode == .normalShuffle { currentIndex = Int.random(in: 0..<flashcardItems.count) } else { currentIndex = 0 }
         currentPrompt    = flashcardItems[currentIndex].definition
         currentCharacter = flashcardItems[currentIndex].hanzi
     }

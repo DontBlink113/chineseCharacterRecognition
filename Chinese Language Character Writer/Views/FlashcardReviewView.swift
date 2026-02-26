@@ -1,7 +1,9 @@
 import SwiftUI
+import FSRS
 
 struct FlashcardReviewView: View {
     @EnvironmentObject var store: LearningSetsStore
+    @EnvironmentObject var fsrsService: FSRSService
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     
     
@@ -198,7 +200,8 @@ struct FlashcardReviewView: View {
             VStack(spacing: 8) {
                 ForEach(flashcardItems) { card in
                     CardDetailRow(
-                        card: card
+                        card: card,
+                        fsrsService: fsrsService
                     )
                 }
             }
@@ -280,6 +283,7 @@ struct DirectionRow: View {
 
 struct CardDetailRow: View {
     let card: FlashcardItem
+    let fsrsService: FSRSService
     
     @State private var isExpanded: Bool = false
     
@@ -331,7 +335,10 @@ struct CardDetailRow: View {
                     // Prompt to Char stats
                     CardDirectionDetail(
                         title: "Definition → Character",
-                        data: card.promptToChar
+                        data: card.promptToChar,
+                        cardId: card.id,
+                        direction: .promptToChar,
+                        fsrsService: fsrsService
                     )
                     
                     Divider()
@@ -339,7 +346,10 @@ struct CardDetailRow: View {
                     // Char to Prompt stats
                     CardDirectionDetail(
                         title: "Character → Definition",
-                        data: card.charToPrompt
+                        data: card.charToPrompt,
+                        cardId: card.id,
+                        direction: .charToPrompt,
+                        fsrsService: fsrsService
                     )
                 }
                 .padding(.horizontal, 12)
@@ -375,6 +385,9 @@ struct StatusBadge: View {
 struct CardDirectionDetail: View {
     let title: String
     let data: FSRSData
+    let cardId: UUID
+    let direction: ReviewDirection
+    let fsrsService: FSRSService
     
     private var nextReviewDate: Date {
         data.due
@@ -384,18 +397,74 @@ struct CardDirectionDetail: View {
         data.due <= Date()
     }
     
+    private var retrievability: Double {
+        // Use FSRS package's getRetrievability method
+        fsrsService.calculateRecallRating(
+            for: FlashcardItem(id: cardId, hanzi: "", definition: ""),
+            direction: direction
+        )
+    }
+    
+    private var timeSinceLastReview: String {
+        guard let lastReview = data.lastReview else { return "Never" }
+        let components = Calendar.current.dateComponents([.day, .hour], from: lastReview, to: Date())
+        if let days = components.day, days > 0 {
+            return "\(days)d ago"
+        } else if let hours = components.hour, hours > 0 {
+            return "\(hours)h ago"
+        } else {
+            return "Just now"
+        }
+    }
+    
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 10) {
             Text(title)
                 .font(.caption.bold())
                 .foregroundColor(Color("Primary900"))
             
+            // First row: Reviews, Difficulty, Stability
             HStack(spacing: 16) {
                 DetailItem(label: "Reviews", value: "\(data.reps)")
-                DetailItem(label: "Interval", value: "\(data.scheduledDays) days")
                 DetailItem(label: "Difficulty", value: String(format: "%.1f", data.difficulty))
+                DetailItem(label: "Stability", value: String(format: "%.1f", data.stability))
             }
             
+            // Second row: Retention, Interval, Lapses
+            HStack(spacing: 16) {
+                DetailItem(
+                    label: "Retention",
+                    value: data.reps > 0 ? String(format: "%.0f%%", retrievability * 100) : "—"
+                )
+                DetailItem(label: "Interval", value: "\(data.scheduledDays)d")
+                DetailItem(label: "Lapses", value: "\(data.lapses)")
+            }
+            
+            Divider()
+            
+            // Last Review
+            HStack(spacing: 8) {
+                Image(systemName: "clock.arrow.circlepath")
+                    .font(.caption)
+                    .foregroundColor(Color("Primary700"))
+                
+                if let lastReview = data.lastReview {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Last reviewed: \(lastReview, style: .date)")
+                            .font(.caption)
+                            .foregroundColor(Color("Primary900"))
+                        Text(timeSinceLastReview)
+                            .font(.caption2)
+                            .foregroundColor(Color("Primary600"))
+                    }
+                } else {
+                    Text("Not reviewed yet")
+                        .font(.caption)
+                        .foregroundColor(Color("Primary600"))
+                }
+            }
+            
+            // Next Review
             HStack(spacing: 8) {
                 Image(systemName: isDue ? "clock.fill" : "calendar")
                     .font(.caption)
@@ -403,20 +472,20 @@ struct CardDirectionDetail: View {
                 
                 if isDue {
                     Text("Due now")
-                        .font(.caption)
+                        .font(.caption.bold())
                         .foregroundColor(.orange)
                 } else if data.reps > 0 {
-                    Text("Next: \(nextReviewDate, style: .date)")
+                    Text("Next review: \(nextReviewDate, style: .date)")
                         .font(.caption)
                         .foregroundColor(Color("Primary600"))
                 } else {
-                    Text("Not reviewed yet")
+                    Text("Start practicing to schedule")
                         .font(.caption)
                         .foregroundColor(Color("Primary600"))
                 }
             }
         }
-        .padding(10)
+        .padding(12)
         .background(Color("Secondary100").opacity(0.2))
         .cornerRadius(8)
     }

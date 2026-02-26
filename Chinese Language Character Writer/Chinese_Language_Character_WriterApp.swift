@@ -9,6 +9,7 @@ import SwiftUI
 
 @main
 struct Chinese_Language_Character_WriterApp: App {
+    @StateObject private var store = LearningSetsStore()
     @StateObject private var fsrsService = FSRSService.shared
     
     var body: some Scene {
@@ -16,10 +17,14 @@ struct Chinese_Language_Character_WriterApp: App {
             NavigationStack {
                 HomeView()
             }
-            .environmentObject(LearningSetsStore())
+            .environmentObject(store)
             .environmentObject(fsrsService)
             .navigationViewStyle(.stack) // This ensures a standard navigation stack on all devices
             .preferredColorScheme(.light)
+            .onAppear {
+                // Sync learning sets to Core Data on app launch
+                fsrsService.syncSetsToDatabase(from: store)
+            }
         }
     }
 }

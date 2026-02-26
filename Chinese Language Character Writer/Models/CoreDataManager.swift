@@ -7,8 +7,6 @@ class CoreDataManager: ObservableObject {
     let container: NSPersistentContainer
     
     private init() {
-        container = NSPersistentContainer(name: "FlashcardModel")
-        
         // Create the model programmatically
         let model = NSManagedObjectModel()
         
@@ -121,10 +119,12 @@ class CoreDataManager: ObservableObject {
         characterEntity.properties = properties
         model.entities = [characterEntity]
         
-        // Use the programmatic model
-        container.persistentStoreDescriptions.first?.url = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first?.appendingPathComponent("FlashcardData.sqlite")
+        // Create container with programmatic model
+        container = NSPersistentContainer(name: "FlashcardModel", managedObjectModel: model)
         
-        let description = NSPersistentStoreDescription()
+        // Configure store location
+        let storeURL = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first?.appendingPathComponent("FlashcardData.sqlite")
+        let description = NSPersistentStoreDescription(url: storeURL!)
         description.type = NSSQLiteStoreType
         container.persistentStoreDescriptions = [description]
         

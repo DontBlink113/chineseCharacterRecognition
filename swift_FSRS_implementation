@@ -1,0 +1,594 @@
+# Swift FSRS Package - Complete API Reference for LLMs
+
+## Package Overview
+Swift-FSRS is a Swift implementation of the FSRS-5.0 (Free Spaced Repetition Scheduler) algorithm, a modern spaced repetition algorithm for flashcard applications. It calculates optimal review intervals based on memory stability and difficulty.
+
+---
+
+## Core Concepts
+
+### Card States
+- **`.new`** (0): Card has never been reviewed
+- **`.learning`** (1): Card is in initial learning phase (short-term)
+- **`.review`** (2): Card is in long-term review phase
+- **`.relearning`** (3): Card was forgotten and is being relearned
+
+### Ratings
+- **`.manual`** (0): Manual rating (used for special operations like forget)
+- **`.again`** (1): Failed to recall
+- **`.hard`** (2): Recalled with difficulty
+- **`.good`** (3): Recalled correctly
+- **`.easy`** (4): Recalled easily
+
+---
+
+## Main Classes and Structs
+
+### 1. **FSRS** (Main Class)
+
+The primary class for interacting with the FSRS algorithm.
+
+#### Initialization
+```swift
+public init(parameters: FSRSParameters)
+```
+
+**Parameters:**
+- `parameters: FSRSParameters` - Configuration for the algorithm
+
+#### Methods
+
+##### `repeat(card:now:_:)`
+Preview all possible outcomes for a card review.
+
+```swift
+public func repeat(
+    card: Card,
+    now: Date,
+    _ completion: ((IPreview) -> IPreview)? = nil
+) -> IPreview
+```
+
+**Parameters:**
+- `card: Card` - The card to schedule
+- `now: Date` - Current time or scheduled review time
+- `completion: ((IPreview) -> IPreview)?` - Optional handler to transform results
+
+**Returns:** `IPreview` - Contains `RecordLog` with outcomes for all 4 ratings (again, hard, good, easy)
+
+---
+
+##### `next(card:now:grade:completion:)`
+Get the outcome for a specific rating.
+
+```swift
+public func next(
+    card: Card,
+    now: Date,
+    grade: Rating,
+    completion: ((RecordLogItem) -> RecordLogItem)? = nil
+) throws -> RecordLogItem
+```
+
+**Parameters:**
+- `card: Card` - The card to review
+- `now: Date` - Current time or scheduled review time
+- `grade: Rating` - The rating given (.again, .hard, .good, .easy)
+- `completion: ((RecordLogItem) -> RecordLogItem)?` - Optional result transformer
+
+**Returns:** `RecordLogItem` - Contains updated card and review log
+
+**Throws:** `FSRSError` if grade is `.manual`
+
+---
+
+##### `getRetrievability(card:now:)`
+Calculate the current retrievability (probability of recall) for a card.
+
+```swift
+public func getRetrievability(
+    card: Card,
+    now: Date = Date()
+) -> (string: String, number: Double)
+```
+
+**Parameters:**
+- `card: Card` - The card to check
+- `now: Date` - Current time (defaults to now)
+
+**Returns:** Tuple with:
+- `string: String` - Formatted percentage (e.g., "85.50%")
+- `number: Double` - Raw retrievability value (0.0 to 1.0)
+
+---
+
+##### `rollback(card:log:completion:)`
+Undo a review and restore the card to its previous state.
+
+```swift
+public func rollback(
+    card: Card,
+    log: ReviewLog,
+    completion: ((Card) -> Card)? = nil
+) throws -> Card
+```
+
+**Parameters:**
+- `card: Card` - Current card state
+- `log: ReviewLog` - The review log to rollback
+- `completion: ((Card) -> Card)?` - Optional result transformer
+
+**Returns:** `Card` - The card in its previous state
+
+**Throws:** `FSRSError` if rating is `.manual` or missing required data
+
+---
+
+##### `forget(card:now:resetCount:_:)`
+Mark a card as forgotten and reset it to new state.
+
+```swift
+public func forget(
+    card: Card,
+    now: Date,
+    resetCount: Bool = false,
+    _ completion: ((RecordLogItem) -> RecordLogItem)? = nil
+) -> RecordLogItem
+```
+
+**Parameters:**
+- `card: Card` - The card to forget
+- `now: Date` - Time of forgetting
+- `resetCount: Bool` - Whether to reset reps and lapses (default: false)
+- `completion: ((RecordLogItem) -> RecordLogItem)?` - Optional result transformer
+
+**Returns:** `RecordLogItem` - Card reset to new state with manual rating
+
+---
+
+##### `reschedule(currentCard:reviews:options:)`
+Reschedule a card based on historical review data.
+
+```swift
+public func reschedule(
+    currentCard: Card,
+    reviews: [ReviewLog],
+    options: RescheduleOptions
+) throws -> IReschedule
+```
+
+**Parameters:**
+- `currentCard: Card` - Current card state
+- `reviews: [ReviewLog]` - Array of historical reviews
+- `options: RescheduleOptions` - Rescheduling configuration
+
+**Returns:** `IReschedule` containing:
+- `collections: [RecordLogItem?]` - All rescheduled items
+- `rescheduleItem: RecordLogItem?` - Final reschedule result
+
+---
+
+### 2. **Card** (Struct)
+
+Represents a flashcard with scheduling information.
+
+```swift
+public struct Card: Equatable, Codable, Hashable {
+    public var due: Date             // Next review date
+    public var stability: Double     // Memory stability (interval at 90% retention)
+    public var difficulty: Double    // Difficulty rating (1-10)
+    public var elapsedDays: Double   // Days since last review
+    public var scheduledDays: Double // Scheduled interval
+    public var reps: Int             // Total review count
+    public var lapses: Int           // Number of times forgotten
+    public var state: CardState      // Current state
+    public var lastReview: Date?     // Last review date
+}
+```
+
+#### Initialization
+```swift
+public init(
+    due: Date = Date(),
+    stability: Double = 0,
+    difficulty: Double = 0,
+    elapsedDays: Double = 0,
+    scheduledDays: Double = 0,
+    reps: Int = 0,
+    lapses: Int = 0,
+    state: CardState = .new,
+    lastReview: Date? = nil
+)
+```
+
+**All parameters are optional with defaults shown above.**
+
+---
+
+### 3. **ReviewLog** (Struct)
+
+Records information about a single review.
+
+```swift
+public struct ReviewLog: Equatable, Codable, Hashable {
+    public var rating: Rating          // Rating given
+    public var state: CardState?       // Card state during review
+    public var due: Date?              // Previous due date
+    public var stability: Double?      // Stability during review
+    public var difficulty: Double?     // Difficulty during review
+    public var elapsedDays: Double     // Days since last review
+    public var lastElapsedDays: Double // Previous elapsed days
+    public var scheduledDays: Double   // Scheduled interval
+    public var review: Date            // Review timestamp
+}
+```
+
+#### Initialization
+```swift
+public init(
+    rating: Rating,
+    state: CardState? = nil,
+    due: Date? = nil,
+    stability: Double? = nil,
+    difficulty: Double? = nil,
+    elapsedDays: Double = 0,
+    lastElapsedDays: Double = 0,
+    scheduledDays: Double = 0,
+    review: Date
+)
+```
+
+**Required:** `rating`, `review`
+
+---
+
+### 4. **FSRSParameters** (Struct)
+
+Configuration parameters for the FSRS algorithm.
+
+```swift
+public struct FSRSParameters: Codable, Equatable {
+    public var requestRetention: Double  // Target retention rate (0-1)
+    public var maximumInterval: Double   // Max days between reviews
+    public var w: [Double]               // 19 algorithm weights
+    public var enableFuzz: Bool          // Add randomness to intervals
+    public var enableShortTerm: Bool     // Enable short-term scheduling
+}
+```
+
+#### Initialization
+```swift
+public init(
+    requestRetention: Double? = nil,  // Default: 0.9
+    maximumInterval: Double? = nil,   // Default: 36500
+    w: [Double]? = nil,               // Default: optimized weights
+    enableFuzz: Bool? = nil,          // Default: false
+    enableShortTerm: Bool? = nil      // Default: true
+)
+```
+
+**All parameters are optional.** Nil values use defaults from `FSRSDefaults`.
+
+**Default weights (w):**
+```swift
+[0.40255, 1.18385, 3.173, 15.69105, 7.1949,
+ 0.5345, 1.4604, 0.0046, 1.54575, 0.1192,
+ 1.01925, 1.9395, 0.11, 0.29605, 2.2698,
+ 0.2315, 2.9898, 0.51655, 0.6621]
+```
+
+---
+
+### 5. **RecordLogItem** (Struct)
+
+Combines a card with its review log.
+
+```swift
+public struct RecordLogItem: Codable, Equatable, Hashable {
+    public var card: Card
+    public var log: ReviewLog
+    
+    public init(card: Card, log: ReviewLog)
+}
+```
+
+---
+
+### 6. **RescheduleOptions** (Struct)
+
+Options for rescheduling operations.
+
+```swift
+public struct RescheduleOptions {
+    var recordLogHandler: ((RecordLogItem?) -> RecordLogItem?)?
+    var reviewsOrderBy: ((ReviewLog, ReviewLog) -> Bool)?
+    var skipManual: Bool = true
+    var updateMemoryState: Bool = false
+    var now: Date = Date()
+    var firstCard: Card?
+}
+```
+
+**Fields:**
+- `recordLogHandler` - Transform each record log item
+- `reviewsOrderBy` - Custom sort function for reviews
+- `skipManual` - Skip manual ratings (default: true)
+- `updateMemoryState` - Update memory state (default: false)
+- `now` - Current timestamp (default: now)
+- `firstCard` - Initial card state (default: empty card)
+
+---
+
+### 7. **FSRSDefaults** (Class)
+
+Provides default values and utility methods.
+
+#### Methods
+
+##### `createEmptyCard(now:afterHandler:)`
+Create a new card with default values.
+
+```swift
+func createEmptyCard(
+    now: Date = Date(),
+    afterHandler: ((Card) -> Card)? = nil
+) -> Card
+```
+
+**Parameters:**
+- `now: Date` - Due date for the new card (default: now)
+- `afterHandler: ((Card) -> Card)?` - Optional transformer
+
+**Returns:** `Card` - New card in `.new` state
+
+---
+
+### 8. **FSRSAlgorithm** (Class)
+
+Low-level algorithm implementation (usually accessed via FSRS class).
+
+#### Key Methods
+
+##### `initStability(g:)`
+Calculate initial stability for a new card.
+
+```swift
+func initStability(g: Rating) -> Double
+```
+
+**Parameters:**
+- `g: Rating` - The rating given
+
+**Returns:** `Double` - Initial stability value
+
+---
+
+##### `initDifficulty(_:)`
+Calculate initial difficulty for a new card.
+
+```swift
+func initDifficulty(_ grade: Rating) -> Double
+```
+
+**Parameters:**
+- `grade: Rating` - The rating given
+
+**Returns:** `Double` - Initial difficulty (1-10)
+
+---
+
+##### `nextDifficulty(d:g:)`
+Calculate next difficulty after a review.
+
+```swift
+func nextDifficulty(d: Double, g: Rating) -> Double
+```
+
+**Parameters:**
+- `d: Double` - Current difficulty
+- `g: Rating` - Rating given
+
+**Returns:** `Double` - Updated difficulty
+
+---
+
+##### `forgettingCurve(elapsedDays:stability:)`
+Calculate retrievability using the forgetting curve.
+
+```swift
+func forgettingCurve(elapsedDays: Double, stability: Double) -> Double
+```
+
+**Parameters:**
+- `elapsedDays: Double` - Days since last review
+- `stability: Double` - Current stability
+
+**Returns:** `Double` - Retrievability (0-1)
+
+---
+
+##### `nextState(memoryState:t:g:)`
+Calculate next memory state.
+
+```swift
+func nextState(
+    memoryState: FSRSState?,
+    t: Double,
+    g: Rating
+) throws -> FSRSState
+```
+
+**Parameters:**
+- `memoryState: FSRSState?` - Current state (nil for new cards)
+- `t: Double` - Time elapsed since last review
+- `g: Rating` - Rating given
+
+**Returns:** `FSRSState` - New stability and difficulty
+
+**Throws:** `FSRSError` for invalid parameters
+
+---
+
+### 9. **Date Extensions**
+
+Utility methods for date manipulation.
+
+##### `dateScheduler(now:t:unit:)`
+Calculate a future date.
+
+```swift
+static func dateScheduler(
+    now: Date,
+    t: Double,
+    unit: TimeUnit = .minutes
+) -> Date
+```
+
+**Parameters:**
+- `now: Date` - Starting date
+- `t: Double` - Time offset
+- `unit: TimeUnit` - `.days` or `.minutes` (default: `.minutes`)
+
+**Returns:** `Date` - Calculated date
+
+---
+
+##### `dateDiff(now:pre:unit:)`
+Calculate difference between dates.
+
+```swift
+static func dateDiff(
+    now: Date,
+    pre: Date?,
+    unit: TimeUnit
+) -> Double
+```
+
+**Parameters:**
+- `now: Date` - Later date
+- `pre: Date?` - Earlier date
+- `unit: TimeUnit` - `.days` or `.minutes`
+
+**Returns:** `Double` - Difference in specified units
+
+---
+
+## Error Handling
+
+### FSRSError
+
+```swift
+public struct FSRSError: Error, Equatable {
+    enum Reason: String, Error {
+        case invalidInterval
+        case invalidRating
+        case invalidRetention
+        case invalidParam
+        case invalidDeltaT
+    }
+    var errorReason: Reason
+    var message: String?
+}
+```
+
+---
+
+## Common Usage Patterns
+
+### 1. Basic Card Review Flow
+
+```swift
+// Initialize FSRS with default parameters
+let fsrs = FSRS(parameters: FSRSParameters())
+
+// Create a new card
+let card = FSRSDefaults().createEmptyCard()
+
+// Preview all possible outcomes
+let preview = fsrs.repeat(card: card, now: Date())
+
+// User rates the card as "Good"
+let result = try fsrs.next(card: card, now: Date(), grade: .good)
+
+// Use the updated card for next review
+let updatedCard = result.card
+```
+
+### 2. Custom Parameters
+
+```swift
+let params = FSRSParameters(
+    requestRetention: 0.85,      // 85% target retention
+    maximumInterval: 365,        // Max 1 year between reviews
+    enableFuzz: true,            // Add randomness
+    enableShortTerm: true        // Enable short-term scheduling
+)
+let fsrs = FSRS(parameters: params)
+```
+
+### 3. Check Retrievability
+
+```swift
+let (percentage, value) = fsrs.getRetrievability(card: card, now: Date())
+// percentage: "78.50%"
+// value: 0.785
+```
+
+### 4. Rollback a Review
+
+```swift
+let preview = fsrs.repeat(card: card, now: Date())
+let hardResult = preview.recordLog[.hard]!
+let previousCard = try fsrs.rollback(card: hardResult.card, log: hardResult.log)
+```
+
+### 5. Forget a Card
+
+```swift
+let forgetResult = fsrs.forget(
+    card: card,
+    now: Date(),
+    resetCount: true  // Reset review count
+)
+let resetCard = forgetResult.card  // Card is now in .new state
+```
+
+---
+
+## Important Notes
+
+1. **Stability** represents how long the memory will last (in days at 90% retention)
+2. **Difficulty** ranges from 1 (easy) to 10 (hard)
+3. **Retrievability** is the probability of successful recall (0-1)
+4. **enableShortTerm**: When true, uses BasicScheduler for initial learning phases
+5. **enableFuzz**: Adds randomness to intervals to avoid review clustering
+6. **Manual rating** cannot be used with `next()` method
+7. All dates use Swift's `Date` type
+8. The algorithm uses 19 weight parameters (w[0] through w[18])
+
+---
+
+## Type Aliases
+
+```swift
+public typealias RecordLog = [Rating: RecordLogItem]
+```
+
+A dictionary mapping each rating to its corresponding result.
+
+---
+
+## Protocol: IScheduler
+
+Internal protocol for schedulers (BasicScheduler, LongTermScheduler).
+
+```swift
+public protocol IScheduler {
+    var preview: IPreview { get }
+    func review(_ g: Rating) -> RecordLogItem
+}
+```
+
+---
+
+This reference covers all public APIs and common usage patterns for the swift-fsrs package.

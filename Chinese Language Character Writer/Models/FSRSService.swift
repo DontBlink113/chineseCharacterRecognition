@@ -4,16 +4,48 @@ import FSRS
 class FSRSService: ObservableObject {
     static let shared = FSRSService()
     
-    private var fsrs: FSRS
+    private let fsrs: FSRS
     private let coreDataManager = CoreDataManager.shared
     
     @Published var allCards: [FlashcardItem] = []
     
     private init() {
         // Initialize FSRS with default parameters
-        self.fsrs = FSRS()
+        self.fsrs = FSRS(parameters: FSRSParameters())
         
         // Load all characters from Core Data on init
+        loadAllCharacters()
+    }
+    
+    /// Sync learning sets from LearningSetsStore to Core Data
+    func syncSetsToDatabase(from store: LearningSetsStore) {
+        print("🔄 Syncing learning sets to Core Data...")
+        var syncedCount = 0
+        
+        for set in store.sets {
+            guard let items = set.items, !items.isEmpty else {
+                print("⏭️ Skipping set '\(set.name)' - no items")
+                continue
+            }
+            
+            for item in items {
+                // Check if character already exists in Core Data
+                if coreDataManager.fetchCharacter(byId: item.id) == nil {
+                    // Add to Core Data
+                    _ = coreDataManager.createCharacter(
+                        id: item.id,
+                        hanzi: item.hanzi,
+                        definition: item.definition,
+                        setId: set.id
+                    )
+                    syncedCount += 1
+                }
+            }
+        }
+        
+        print("✅ Synced \(syncedCount) new characters to Core Data")
+        
+        // Reload all cards after sync
         loadAllCharacters()
     }
     
@@ -22,6 +54,7 @@ class FSRSService: ObservableObject {
     func loadAllCharacters() {
         let coreDataCharacters = coreDataManager.fetchAllCharacters()
         allCards = coreDataCharacters.map { $0.toFlashcardItem() }
+        print("📚 FSRSService loaded \(allCards.count) cards from Core Data")
     }
     
     func loadCharacters(forSetId setId: UUID) -> [FlashcardItem] {
@@ -71,21 +104,12 @@ class FSRSService: ObservableObject {
         // Get current time
         let now = Date()
         
-        // Perform review using FSRS
-        let schedulingCards = fsrs.repeat(card: card, now: now)
-        
-        // Get the updated card based on rating
-        let updatedCard: Card
-        switch fsrsRating {
-        case .again:
-            updatedCard = schedulingCards.again.card
-        case .hard:
-            updatedCard = schedulingCards.hard.card
-        case .good:
-            updatedCard = schedulingCards.good.card
-        case .easy:
-            updatedCard = schedulingCards.easy.card
+        // Perform review using FSRS - get the specific result for the rating
+        guard let result = try? fsrs.next(card: card, now: now, grade: fsrsRating) else {
+            return
         }
+        
+        let updatedCard = result.card
         
         // Update Core Data with new FSRS values
         coreDataChar.promptToCharStability = updatedCard.stability
@@ -121,19 +145,11 @@ class FSRSService: ObservableObject {
         var card = createFSRSCard(from: coreDataChar, direction: .charToPrompt)
         let now = Date()
         
-        let schedulingCards = fsrs.repeat(card: card, now: now)
-        
-        let updatedCard: Card
-        switch fsrsRating {
-        case .again:
-            updatedCard = schedulingCards.again.card
-        case .hard:
-            updatedCard = schedulingCards.hard.card
-        case .good:
-            updatedCard = schedulingCards.good.card
-        case .easy:
-            updatedCard = schedulingCards.easy.card
+        guard let result = try? fsrs.next(card: card, now: now, grade: fsrsRating) else {
+            return
         }
+        
+        let updatedCard = result.card
         
         coreDataChar.charToPromptStability = updatedCard.stability
         coreDataChar.charToPromptDifficulty = updatedCard.difficulty
@@ -166,7 +182,9 @@ class FSRSService: ObservableObject {
         }
         
         let fsrsCard = createFSRSCard(from: coreDataChar, direction: direction)
-        return fsrsCard.retrievability
+        // Use FSRS built-in retrievability calculation
+        let retrievability = fsrs.getRetrievability(card: fsrsCard, now: Date())
+        return retrievability.number
     }
     
     func getDueCards(direction: ReviewDirection = .promptToChar) -> [FlashcardItem] {
@@ -279,25 +297,25 @@ class FSRSService: ObservableObject {
         case .promptToChar:
             return Card(
                 due: coreDataChar.promptToCharDue,
-                stability: coreDataChar.promptToCharStability,
-                difficulty: coreDataChar.promptToCharDifficulty,
-                elapsedDays: calculateElapsedDays(lastReview: coreDataChar.promptToCharLastReview),
-                scheduledDays: calculateScheduledDays(due: coreDataChar.promptToCharDue, lastReview: coreDataChar.promptToCharLastReview),
+                stability: Double(coreDataChar.promptToCharStability),
+                difficulty: Double(coreDataChar.promptToCharDifficulty),
+                elapsedDays: Double(calculateElapsedDays(lastReview: coreDataChar.promptToCharLastReview)),
+                scheduledDays: Double(calculateScheduledDays(due: coreDataChar.promptToCharDue, lastReview: coreDataChar.promptToCharLastReview)),
                 reps: 0,
                 lapses: 0,
-                state: State(rawValue: Int(coreDataChar.promptToCharState)) ?? .new,
+                state: CardState(rawValue: Int(coreDataChar.promptToCharState)) ?? .new,
                 lastReview: coreDataChar.promptToCharLastReview
             )
         case .charToPrompt:
             return Card(
                 due: coreDataChar.charToPromptDue,
-                stability: coreDataChar.charToPromptStability,
-                difficulty: coreDataChar.charToPromptDifficulty,
-                elapsedDays: calculateElapsedDays(lastReview: coreDataChar.charToPromptLastReview),
-                scheduledDays: calculateScheduledDays(due: coreDataChar.charToPromptDue, lastReview: coreDataChar.charToPromptLastReview),
+                stability: Double(coreDataChar.charToPromptStability),
+                difficulty: Double(coreDataChar.charToPromptDifficulty),
+                elapsedDays: Double(calculateElapsedDays(lastReview: coreDataChar.charToPromptLastReview)),
+                scheduledDays: Double(calculateScheduledDays(due: coreDataChar.charToPromptDue, lastReview: coreDataChar.charToPromptLastReview)),
                 reps: 0,
                 lapses: 0,
-                state: State(rawValue: Int(coreDataChar.charToPromptState)) ?? .new,
+                state: CardState(rawValue: Int(coreDataChar.charToPromptState)) ?? .new,
                 lastReview: coreDataChar.charToPromptLastReview
             )
         }
