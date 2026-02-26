@@ -22,6 +22,15 @@ public struct FSRSReviewLog: Codable, Equatable {
 public enum FSRSState: Int, Codable, Equatable {
     case new = 0         // Unseen card
     case learning = 1    // Currently learning
+    case review = 2      // In review phase
+    case relearning = 3  // Relearning after lapse
+}
+
+// MARK: - Flashcard Scheduling Mode
+public enum FlashcardSchedulingMode: String, CaseIterable, Codable {
+    case spacedRepetition = "Spaced Repetition"
+    case normalSequential = "Normal (Sequential)"
+    case normalShuffle = "Normal (Shuffle)"
 }
 
 // MARK: - FSRS Data Model (FSRS-6 Compatible)

@@ -816,7 +816,7 @@ struct FlashcardPracticeView: View {
 
     // MARK: Setup state
     @State private var selectedSetIds: Set<UUID> = []
-    @State private var shuffle = false
+    @State private var schedulingMode: FlashcardSchedulingMode = .spacedRepetition
     @State private var inSession = false
     @State private var practiceMode: PracticeMode = .flip
 
@@ -868,7 +868,16 @@ struct FlashcardPracticeView: View {
     }
 
     private var flashcardItems: [FlashcardItem] {
-        selectedSets.flatMap { $0.items ?? [] }
+        let direction: ReviewDirection = practiceMode == .draw ? .promptToChar : .charToPrompt
+        
+        switch schedulingMode {
+        case .spacedRepetition:
+            return fsrsService.getCardsForSpacedRepetition(setIds: selectedSetIds, direction: direction)
+        case .normalSequential:
+            return fsrsService.getCardsSequential(setIds: selectedSetIds)
+        case .normalShuffle:
+            return fsrsService.getCardsShuffle(setIds: selectedSetIds)
+        }
     }
 
     private var isCurrentSessionComplete: Bool { reviewedCardIds.count >= flashcardItems.count }
@@ -1020,12 +1029,13 @@ struct FlashcardPracticeView: View {
 
     private var orderOptionsSection: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("Card Order").font(.subheadline).foregroundColor(Color("Primary900"))
-            HStack {
-                Text("Shuffle cards").font(.subheadline).foregroundColor(Color("Primary900"))
-                Spacer()
-                Toggle("", isOn: $shuffle).labelsHidden()
+            Text("Scheduling Mode").font(.subheadline).foregroundColor(Color("Primary900"))
+            Picker("Scheduling", selection: $schedulingMode) {
+                ForEach(FlashcardSchedulingMode.allCases, id: \.self) { mode in
+                    Text(mode.rawValue).tag(mode)
+                }
             }
+            .pickerStyle(.menu)
             .padding(12)
             .background(Color.white.opacity(0.7))
             .cornerRadius(8)
@@ -1983,6 +1993,12 @@ struct FlashcardPracticeView: View {
         reviewedCardIds.insert(currentCard.id)
         difficultyRatings[currentCard.id] = rating
         
+        // Update FSRS data based on practice mode
+        if practiceMode == .flip {
+            fsrsService.reviewCharToPrompt(cardId: currentCard.id, rating: rating)
+        }
+        // Note: Draw mode calls reviewPromptToChar in the difficulty panel button action
+        
         if reviewedCardIds.count >= flashcardItems.count {
             showEndPage = true
         } else {
@@ -1991,7 +2007,7 @@ struct FlashcardPracticeView: View {
     }
 
     private func previousCard() {
-        guard !flashcardItems.isEmpty, !shuffle, currentIndex > 0 else { return }
+        guard !flashcardItems.isEmpty, schedulingMode == .normalSequential, currentIndex > 0 else { return }
         resetDrawState()
         resetFlipState()
         currentIndex    -= 1

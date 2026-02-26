@@ -157,7 +157,17 @@ class FSRSService: ObservableObject {
         loadAllCharacters()
     }
     
-    // MARK: - Due Cards
+    // MARK: - Due Cards & Recall Rating
+    
+    /// Get recall probability from FSRS Card's built-in retrievability property
+    func calculateRecallRating(for card: FlashcardItem, direction: ReviewDirection) -> Double {
+        guard let coreDataChar = coreDataManager.fetchCharacter(byId: card.id) else {
+            return 1.0 // Default for cards not found
+        }
+        
+        let fsrsCard = createFSRSCard(from: coreDataChar, direction: direction)
+        return fsrsCard.retrievability
+    }
     
     func getDueCards(direction: ReviewDirection = .promptToChar) -> [FlashcardItem] {
         let now = Date()
@@ -181,6 +191,72 @@ class FSRSService: ObservableObject {
                 return card.charToPrompt.state == .new
             }
         }
+    }
+    
+    // MARK: - Spaced Repetition Ordering
+    
+    /// Get cards ordered by spaced repetition priority:
+    /// 1. Active cards not yet reviewed (state != .new && lastReview == nil)
+    /// 2. Due cards with recall < 90%, sorted by lowest recall first
+    /// 3. All other cards, sorted by lowest recall first
+    func getCardsForSpacedRepetition(setIds: Set<UUID>, direction: ReviewDirection) -> [FlashcardItem] {
+        // Filter cards by selected sets
+        let cardsInSets = allCards.filter { card in
+            guard let coreDataChar = coreDataManager.fetchCharacter(byId: card.id) else { return false }
+            return setIds.contains(coreDataChar.setId)
+        }
+        
+        let now = Date()
+        var priority1: [FlashcardItem] = [] // Active but not reviewed
+        var priority2: [(card: FlashcardItem, recall: Double)] = [] // Due with recall < 90%
+        var priority3: [(card: FlashcardItem, recall: Double)] = [] // All others
+        
+        for card in cardsInSets {
+            let data: FSRSData
+            switch direction {
+            case .promptToChar:
+                data = card.promptToChar
+            case .charToPrompt:
+                data = card.charToPrompt
+            }
+            
+            // Priority 1: Active but not yet reviewed
+            if data.state != .new && data.lastReview == nil {
+                priority1.append(card)
+                continue
+            }
+            
+            let recall = calculateRecallRating(for: card, direction: direction)
+            
+            // Priority 2: Due cards with recall < 90%
+            if data.due <= now && recall < 0.9 {
+                priority2.append((card, recall))
+            } else {
+                // Priority 3: Everything else
+                priority3.append((card, recall))
+            }
+        }
+        
+        // Sort priority 2 and 3 by lowest recall first
+        priority2.sort { $0.recall < $1.recall }
+        priority3.sort { $0.recall < $1.recall }
+        
+        // Combine all priorities
+        return priority1 + priority2.map { $0.card } + priority3.map { $0.card }
+    }
+    
+    /// Get cards for normal sequential mode (original order)
+    func getCardsSequential(setIds: Set<UUID>) -> [FlashcardItem] {
+        return allCards.filter { card in
+            guard let coreDataChar = coreDataManager.fetchCharacter(byId: card.id) else { return false }
+            return setIds.contains(coreDataChar.setId)
+        }
+    }
+    
+    /// Get cards for normal shuffle mode (randomized)
+    func getCardsShuffle(setIds: Set<UUID>) -> [FlashcardItem] {
+        let sequential = getCardsSequential(setIds: setIds)
+        return sequential.shuffled()
     }
     
     // MARK: - Helper Methods
