@@ -4,7 +4,7 @@ struct HomeView: View {
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     var body: some View {
         ZStack {
-            Color(red: 0.68, green: 0.85, blue: 0.9)
+            Color("Secondary100")
                 .ignoresSafeArea()
 
             VStack(spacing: 0) {
@@ -14,14 +14,14 @@ struct HomeView: View {
                 VStack(spacing: 16) {
                     Text("Chinese Character Writing")
                         .font(.system(size: horizontalSizeClass == .compact ? 32 : 52, weight: .bold))
-                        .foregroundColor(Color("Blue 900"))
+                        .foregroundColor(Color("Primary700"))
                         .multilineTextAlignment(.center)
                         .lineLimit(horizontalSizeClass == .compact ? 3 : 2)
                         .minimumScaleFactor(0.7)
                     
-                    Text("Learn to write characters with intelligent autograding")
+                    Text("Learn to write characters with spaced repetition.")
                         .font(.title2)
-                        .foregroundColor(Color("Blue 900").opacity(0.9))
+                        .foregroundColor(Color("Primary600").opacity(0.85))
                         .multilineTextAlignment(.center)
                         .padding(.horizontal, 40)
                 }
@@ -29,48 +29,70 @@ struct HomeView: View {
                 .padding(.horizontal, 32)
                 .background(
                     RoundedRectangle(cornerRadius: 24)
-                        .fill(Color("Sand 200"))
-                        .shadow(color: Color.black.opacity(0.2), radius: 20, x: 0, y: 10)
+                        .fill(Color("Secondary100"))
+                        .shadow(color: Color("Primary300").opacity(0.25), radius: 16, x: 0, y: 8)
                 )
                 .padding(.horizontal, 24)
                 
                 Spacer()
                 
                 // Action buttons - anchored near bottom
-                VStack(spacing: 16) {
+                VStack(spacing: 14) {
                     NavigationLink(destination: FlashcardPracticeView()) {
                         Text("Flashcards")
-                            .font(.title)
-                            .fontWeight(.bold)
-                            .foregroundColor(Color("Sand 100"))
-                            .padding(.horizontal, 40)
-                            .padding(.vertical, 24)
-                            .frame(maxWidth: 400)
-                            .background(Color("Blue 700"))
-                            .cornerRadius(16)
+                            .font(.title2)
+                            .fontWeight(.semibold)
+                            .foregroundColor(Color("Secondary100"))
+                            .padding(.horizontal, 36)
+                            .padding(.vertical, 20)
+                            .frame(maxWidth: 360)
+                            .background(Color("Primary600"))
+                            .cornerRadius(14)
                             .shadow(
-                                color: Color("Blue 700").opacity(0.3),
-                                radius: 12,
+                                color: Color("Primary500").opacity(0.2),
+                                radius: 10,
                                 x: 0,
-                                y: 6
+                                y: 4
                             )
+                    }
+                    
+                    NavigationLink(destination: FlashcardReviewView()) {
+                        HStack(spacing: 8) {
+                            Image(systemName: "chart.bar.fill")
+                                .font(.body)
+                            Text("Review Progress")
+                        }
+                        .font(.body)
+                        .fontWeight(.medium)
+                        .foregroundColor(Color("Primary600"))
+                        .padding(.horizontal, 20)
+                        .padding(.vertical, 10)
+                        .frame(maxWidth: 260)
+                        .background(Color("Secondary200"))
+                        .cornerRadius(10)
+                        .shadow(
+                            color: Color("Neutral400").opacity(0.15),
+                            radius: 4,
+                            x: 0,
+                            y: 2
+                        )
                     }
                     
                     NavigationLink(destination: CharacterSetsView()) {
                         Text("Set Characters")
-                            .font(.title3)
+                            .font(.body)
                             .fontWeight(.medium)
-                            .foregroundColor(Color("Blue 900"))
-                            .padding(.horizontal, 24)
-                            .padding(.vertical, 12)
-                            .frame(maxWidth: 280)
-                            .background(Color.white)
-                            .cornerRadius(12)
+                            .foregroundColor(Color("Primary600"))
+                            .padding(.horizontal, 20)
+                            .padding(.vertical, 10)
+                            .frame(maxWidth: 260)
+                            .background(Color("Secondary200"))
+                            .cornerRadius(10)
                             .shadow(
-                                color: Color.black.opacity(0.1),
-                                radius: 6,
+                                color: Color("Neutral400").opacity(0.15),
+                                radius: 4,
                                 x: 0,
-                                y: 3
+                                y: 2
                             )
                     }
                 }
@@ -81,15 +103,13 @@ struct HomeView: View {
                 NavigationLink(destination: FeedbackView()) {
                     HStack(spacing: 6) {
                         Text("Have feedback?")
-                            .foregroundColor(Color("Blue 900"))
+                            .foregroundColor(Color("Neutral700"))
                         Text("click here")
-                            .foregroundColor(Color("Blue 700"))
+                            .foregroundColor(Color("Primary500"))
                             .underline()
                     }
-                    .padding(12)
-                    .background(Color.clear)
-                    .cornerRadius(12)
-                    .shadow(color: Color.black.opacity(0.1), radius: 6, x: 0, y: 3)
+                    .font(.subheadline)
+                    .padding(10)
                 }
                 .padding(.bottom, 24)
             }
@@ -99,7 +119,7 @@ struct HomeView: View {
                 NavigationLink(destination: SettingsView()) {
                     Image(systemName: "gearshape")
                         .imageScale(.large)
-                        .foregroundColor(Color("Blue 900"))
+                        .foregroundColor(Color("Primary600"))
                 }
             }
         }

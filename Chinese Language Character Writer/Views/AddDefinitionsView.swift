@@ -16,7 +16,7 @@ struct AddDefinitionsView: View {
     
     var body: some View {
         ZStack {
-            Color(red: 0.68, green: 0.85, blue: 0.9)
+            Color("Secondary100")
                 .ignoresSafeArea()
             
             ScrollView {
@@ -24,20 +24,20 @@ struct AddDefinitionsView: View {
                     // Title
                     Text("Edit Character List")
                         .font(.system(size: 40)).bold()
-                        .foregroundColor(Color("Blue 900"))
+                        .foregroundColor(Color("Primary900"))
                         .padding(.top, 20)
                     
                     if let set = learningSet {
                         Text(set.name)
                             .font(.title3)
-                            .foregroundColor(Color("Neutral 700"))
+                            .foregroundColor(Color("Neutral700"))
                     }
                     
                     // Add/remove characters section
                     VStack(alignment: .leading, spacing: 12) {
                         Text("Add Characters")
                             .font(.headline)
-                            .foregroundColor(Color("Blue 900"))
+                            .foregroundColor(Color("Primary900"))
                         HStack(spacing: 8) {
                             TextField("Type or paste characters (e.g., 你好)", text: $newHanziText)
                                 .textFieldStyle(.roundedBorder)
@@ -49,10 +49,10 @@ struct AddDefinitionsView: View {
                                     Text("Add")
                                 }
                                 .font(.subheadline)
-                                .foregroundColor(Color("Sand 100"))
+                                .foregroundColor(Color("Secondary100"))
                                 .padding(.vertical, 8)
                                 .padding(.horizontal, 12)
-                                .background(Color("Blue 700"))
+                                .background(Color("Primary700"))
                                 .cornerRadius(8)
                             }
                             .buttonStyle(.plain)
@@ -67,12 +67,12 @@ struct AddDefinitionsView: View {
                             Text("Auto-Generate All Definitions")
                         }
                         .font(.headline)
-                        .foregroundColor(Color("Sand 100"))
+                        .foregroundColor(Color("Secondary100"))
                         .frame(maxWidth: .infinity)
                         .padding(.vertical, 14)
-                        .background(Color("Blue 700"))
+                        .background(Color("Primary700"))
                         .cornerRadius(10)
-                        .shadow(color: Color("Blue 700").opacity(0.3), radius: 8, x: 0, y: 4)
+                        .shadow(color: Color("Primary700").opacity(0.3), radius: 8, x: 0, y: 4)
                     }
                     .buttonStyle(.plain)
                     .padding(.horizontal, 24)
@@ -83,7 +83,7 @@ struct AddDefinitionsView: View {
                             HStack {
                                 Text(items[index].hanzi)
                                     .font(.system(size: 36, weight: .bold))
-                                    .foregroundColor(Color("Blue 900"))
+                                    .foregroundColor(Color("Primary900"))
                                 
                                 Spacer()
                                 
@@ -95,7 +95,7 @@ struct AddDefinitionsView: View {
                                         Text("Auto")
                                     }
                                     .font(.caption)
-                                    .foregroundColor(Color("Blue 700"))
+                                    .foregroundColor(Color("Primary700"))
                                     .padding(.horizontal, 12)
                                     .padding(.vertical, 6)
                                     .background(Color.white)
@@ -117,7 +117,7 @@ struct AddDefinitionsView: View {
                             VStack(alignment: .leading, spacing: 4) {
                                 Text("Definition")
                                     .font(.caption)
-                                    .foregroundColor(Color("Neutral 700"))
+                                    .foregroundColor(Color("Neutral700"))
                                 
                                 TextEditor(text: $items[index].definition)
                                     .frame(minHeight: 80)
@@ -126,7 +126,7 @@ struct AddDefinitionsView: View {
                                     .cornerRadius(8)
                                     .overlay(
                                         RoundedRectangle(cornerRadius: 8)
-                                            .stroke(Color("Blue 700").opacity(0.3), lineWidth: 1)
+                                            .stroke(Color("Primary700").opacity(0.3), lineWidth: 1)
                                     )
                             }
                         }
@@ -141,12 +141,12 @@ struct AddDefinitionsView: View {
                     Button(action: saveDefinitions) {
                         Text("Save Definitions")
                             .font(.headline)
-                            .foregroundColor(Color("Sand 100"))
+                            .foregroundColor(Color("Secondary100"))
                             .frame(maxWidth: .infinity)
                             .padding(.vertical, 14)
-                            .background(Color("Blue 700"))
+                            .background(Color("Primary700"))
                             .cornerRadius(10)
-                            .shadow(color: Color("Blue 700").opacity(0.3), radius: 8, x: 0, y: 4)
+                            .shadow(color: Color("Primary700").opacity(0.3), radius: 8, x: 0, y: 4)
                     }
                     .buttonStyle(.plain)
                     .padding(.horizontal, 24)

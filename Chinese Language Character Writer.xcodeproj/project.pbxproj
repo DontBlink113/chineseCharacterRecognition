@@ -7,6 +7,8 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		010037492F4845C20089CCAE /* FSRS in Frameworks */ = {isa = PBXBuildFile; productRef = 010037482F4845C20089CCAE /* FSRS */; };
+		0100374B2F4845C60089CCAE /* Algorithms in Frameworks */ = {isa = PBXBuildFile; productRef = 0100374A2F4845C60089CCAE /* Algorithms */; };
 		0139382F2EFC8A3E0041C8D7 /* Chinese Language Dictionary - All Characters (Frequency).csv in Resources */ = {isa = PBXBuildFile; fileRef = 0139382E2EFC8A3E0041C8D7 /* Chinese Language Dictionary - All Characters (Frequency).csv */; };
 		013938302EFC8A3E0041C8D7 /* Chinese Language Dictionary - All Characters (Frequency).csv in Resources */ = {isa = PBXBuildFile; fileRef = 0139382E2EFC8A3E0041C8D7 /* Chinese Language Dictionary - All Characters (Frequency).csv */; };
 		013938312EFC8A3E0041C8D7 /* Chinese Language Dictionary - All Characters (Frequency).csv in Resources */ = {isa = PBXBuildFile; fileRef = 0139382E2EFC8A3E0041C8D7 /* Chinese Language Dictionary - All Characters (Frequency).csv */; };
@@ -74,6 +76,8 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				0100374B2F4845C60089CCAE /* Algorithms in Frameworks */,
+				010037492F4845C20089CCAE /* FSRS in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -94,6 +98,13 @@
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
+		0100369D2F4844CD0089CCAE /* Frameworks */ = {
+			isa = PBXGroup;
+			children = (
+			);
+			name = Frameworks;
+			sourceTree = "<group>";
+		};
 		0139355C2ECD999F0041C8D7 = {
 			isa = PBXGroup;
 			children = (
@@ -101,6 +112,7 @@
 				013935672ECD999F0041C8D7 /* Chinese Language Character Writer */,
 				0139357B2ECD99A00041C8D7 /* Chinese Language Character WriterTests */,
 				013935852ECD99A00041C8D7 /* Chinese Language Character WriterUITests */,
+				0100369D2F4844CD0089CCAE /* Frameworks */,
 				013935662ECD999F0041C8D7 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -135,6 +147,8 @@
 			);
 			name = "Chinese Language Character Writer";
 			packageProductDependencies = (
+				010037482F4845C20089CCAE /* FSRS */,
+				0100374A2F4845C60089CCAE /* Algorithms */,
 			);
 			productName = "Chinese Language Character Writer";
 			productReference = 013935652ECD999F0041C8D7 /* Chinese Language Character Writer.app */;
@@ -218,6 +232,10 @@
 			);
 			mainGroup = 0139355C2ECD999F0041C8D7;
 			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				0100369B2F4841BD0089CCAE /* XCRemoteSwiftPackageReference "swift-fsrs" */,
+				0100369C2F4844300089CCAE /* XCRemoteSwiftPackageReference "swift-algorithms" */,
+			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 013935662ECD999F0041C8D7 /* Products */;
 			projectDirPath = "";
@@ -627,6 +645,38 @@
 			defaultConfigurationName = Release;
 		};
 /* End XCConfigurationList section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		0100369B2F4841BD0089CCAE /* XCRemoteSwiftPackageReference "swift-fsrs" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/open-spaced-repetition/swift-fsrs";
+			requirement = {
+				branch = main;
+				kind = branch;
+			};
+		};
+		0100369C2F4844300089CCAE /* XCRemoteSwiftPackageReference "swift-algorithms" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/apple/swift-algorithms.git";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 1.2.1;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		010037482F4845C20089CCAE /* FSRS */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 0100369B2F4841BD0089CCAE /* XCRemoteSwiftPackageReference "swift-fsrs" */;
+			productName = FSRS;
+		};
+		0100374A2F4845C60089CCAE /* Algorithms */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 0100369C2F4844300089CCAE /* XCRemoteSwiftPackageReference "swift-algorithms" */;
+			productName = Algorithms;
+		};
+/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = 0139355D2ECD999F0041C8D7 /* Project object */;
 }

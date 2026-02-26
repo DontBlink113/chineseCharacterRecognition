@@ -8,7 +8,7 @@ struct SettingsView: View {
                     Text("App Version 1.0.2")
                     Spacer()
                     Text(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0")
-                        .foregroundColor(Color("Neutral 700"))
+                        .foregroundColor(Color("Primary600"))
                 }
             }
             
@@ -33,7 +33,7 @@ struct SettingsView: View {
         .listStyle(.insetGrouped)
         .navigationTitle("Settings")
         .navigationBarTitleDisplayMode(.inline)
-        .background(Color(red: 0.68, green: 0.85, blue: 0.9).ignoresSafeArea())
+        .background(Color("Secondary100").ignoresSafeArea())
     }
 }
 

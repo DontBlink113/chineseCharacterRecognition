@@ -454,6 +454,207 @@ class StrokeAnalyzer {
         return distanceWeight * avgDistance + lengthWeight * lengthDiff
     }
     
+    // MARK: - Decomposed Error Calculation
+    
+    /// Result of decomposed stroke comparison
+    /// Contains separate error components for shape, size, position, and angle
+    struct DecomposedError {
+        let shapeError: Double      // Fréchet distance after optimal alignment (pure shape difference)
+        let sizeError: Double       // Scale factor needed (1.0 = same size, 2.0 = user is 2x larger)
+        let distanceError: Double   // Translation distance needed to align centroids
+        let angleError: Double      // Rotation angle needed in radians (absolute value)
+        
+        /// Combined weighted error
+        func combinedError(shapeWeight: Double = 0.4,
+                          sizeWeight: Double = 0.2,
+                          distanceWeight: Double = 0.2,
+                          angleWeight: Double = 0.2) -> Double {
+            return shapeWeight * shapeError +
+                   sizeWeight * sizeError +
+                   distanceWeight * distanceError +
+                   angleWeight * angleError
+        }
+    }
+    
+    /// Calculate decomposed error between user stroke and reference stroke
+    /// Finds optimal alignment (translation, rotation, scale) then measures residual shape error
+    static func calculateDecomposedError(userStroke: Stroke, referenceStroke: ReferenceStroke) -> DecomposedError {
+        let userPoints = userStroke.points.map { $0.location }
+        let refPoints = referenceStroke.medianPoints
+        
+        guard userPoints.count >= 2, refPoints.count >= 2 else {
+            return DecomposedError(shapeError: Double.infinity, sizeError: Double.infinity,
+                                   distanceError: Double.infinity, angleError: Double.infinity)
+        }
+        
+        // Step 1: Calculate centroids
+        let userCentroid = calculateCentroid(userPoints)
+        let refCentroid = calculateCentroid(refPoints)
+        
+        // Distance error: Euclidean distance between centroids
+        let distanceError = sqrt(pow(userCentroid.x - refCentroid.x, 2) + 
+                                 pow(userCentroid.y - refCentroid.y, 2))
+        
+        // Step 2: Translate both to origin (center on centroid)
+        let userCentered = userPoints.map { CGPoint(x: $0.x - userCentroid.x, y: $0.y - userCentroid.y) }
+        let refCentered = refPoints.map { CGPoint(x: $0.x - refCentroid.x, y: $0.y - refCentroid.y) }
+        
+        // Step 3: Calculate sizes (RMS distance from centroid)
+        let userSize = calculateRMSSize(userCentered)
+        let refSize = calculateRMSSize(refCentered)
+        
+        // Size error: ratio of sizes (how much to scale user to match ref)
+        let sizeRatio = refSize > 0.0001 ? userSize / refSize : 1.0
+        let sizeError = abs(log(max(sizeRatio, 0.001)))  // Log scale so 2x and 0.5x have same error
+        
+        // Step 4: Normalize both to unit size
+        let userNormalized = userSize > 0.0001 ? userCentered.map { CGPoint(x: $0.x / userSize, y: $0.y / userSize) } : userCentered
+        let refNormalized = refSize > 0.0001 ? refCentered.map { CGPoint(x: $0.x / refSize, y: $0.y / refSize) } : refCentered
+        
+        // Step 5: Find optimal rotation angle using Procrustes analysis
+        let optimalAngle = calculateOptimalRotation(from: userNormalized, to: refNormalized)
+        let angleError = abs(optimalAngle)  // Absolute rotation needed
+        
+        // Step 6: Rotate user stroke by optimal angle
+        let userRotated = rotatePoints(userNormalized, by: optimalAngle)
+        
+        // Step 7: Calculate shape error (Fréchet distance after alignment)
+        let shapeError = calculateFrechetDistancePoints(userRotated, refNormalized)
+        
+        return DecomposedError(shapeError: shapeError, sizeError: sizeError,
+                               distanceError: distanceError, angleError: angleError)
+    }
+    
+    /// Calculate centroid of a set of points
+    private static func calculateCentroid(_ points: [CGPoint]) -> CGPoint {
+        guard !points.isEmpty else { return .zero }
+        let sumX = points.reduce(0.0) { $0 + $1.x }
+        let sumY = points.reduce(0.0) { $0 + $1.y }
+        return CGPoint(x: sumX / CGFloat(points.count), y: sumY / CGFloat(points.count))
+    }
+    
+    /// Calculate RMS (root mean square) distance from origin - represents "size" of stroke
+    private static func calculateRMSSize(_ points: [CGPoint]) -> CGFloat {
+        guard !points.isEmpty else { return 0 }
+        let sumSquares = points.reduce(0.0) { $0 + $1.x * $1.x + $1.y * $1.y }
+        return sqrt(sumSquares / CGFloat(points.count))
+    }
+    
+    /// Find optimal rotation angle to align source points to target points
+    /// Uses Procrustes analysis: minimize sum of squared distances
+    private static func calculateOptimalRotation(from source: [CGPoint], to target: [CGPoint]) -> Double {
+        // Resample both to same number of points for comparison
+        let numSamples = 20
+        let sourceSampled = resamplePoints(source, to: numSamples)
+        let targetSampled = resamplePoints(target, to: numSamples)
+        
+        // Calculate optimal rotation using SVD-like approach
+        // For 2D, this simplifies to: theta = atan2(sum(x_s * y_t - y_s * x_t), sum(x_s * x_t + y_s * y_t))
+        var crossSum: Double = 0  // sum of cross products
+        var dotSum: Double = 0    // sum of dot products
+        
+        for i in 0..<numSamples {
+            let sx = Double(sourceSampled[i].x)
+            let sy = Double(sourceSampled[i].y)
+            let tx = Double(targetSampled[i].x)
+            let ty = Double(targetSampled[i].y)
+            
+            crossSum += sx * ty - sy * tx
+            dotSum += sx * tx + sy * ty
+        }
+        
+        return atan2(crossSum, dotSum)
+    }
+    
+    /// Rotate points by given angle (in radians)
+    private static func rotatePoints(_ points: [CGPoint], by angle: Double) -> [CGPoint] {
+        let cosA = cos(angle)
+        let sinA = sin(angle)
+        return points.map { p in
+            CGPoint(x: CGFloat(Double(p.x) * cosA - Double(p.y) * sinA),
+                    y: CGFloat(Double(p.x) * sinA + Double(p.y) * cosA))
+        }
+    }
+    
+    /// Resample a polyline to have exactly n points, evenly spaced by arc length
+    private static func resamplePoints(_ points: [CGPoint], to n: Int) -> [CGPoint] {
+        guard points.count >= 2, n >= 2 else { return points }
+        
+        // Calculate total length and segment lengths
+        var lengths: [CGFloat] = [0]
+        for i in 1..<points.count {
+            let dx = points[i].x - points[i-1].x
+            let dy = points[i].y - points[i-1].y
+            lengths.append(lengths.last! + sqrt(dx * dx + dy * dy))
+        }
+        
+        let totalLength = lengths.last!
+        guard totalLength > 0 else { return Array(repeating: points[0], count: n) }
+        
+        // Resample at even intervals
+        var resampled: [CGPoint] = []
+        let step = totalLength / CGFloat(n - 1)
+        
+        for i in 0..<n {
+            let targetDist = CGFloat(i) * step
+            
+            // Find segment containing this distance
+            var segIdx = 0
+            while segIdx < lengths.count - 1 && lengths[segIdx + 1] < targetDist {
+                segIdx += 1
+            }
+            
+            if segIdx >= points.count - 1 {
+                resampled.append(points.last!)
+            } else {
+                let segLength = lengths[segIdx + 1] - lengths[segIdx]
+                let t = segLength > 0 ? (targetDist - lengths[segIdx]) / segLength : 0
+                let p = CGPoint(
+                    x: points[segIdx].x + t * (points[segIdx + 1].x - points[segIdx].x),
+                    y: points[segIdx].y + t * (points[segIdx + 1].y - points[segIdx].y)
+                )
+                resampled.append(p)
+            }
+        }
+        
+        return resampled
+    }
+    
+    /// Calculate Fréchet distance between two point arrays
+    private static func calculateFrechetDistancePoints(_ points1: [CGPoint], _ points2: [CGPoint]) -> Double {
+        guard !points1.isEmpty, !points2.isEmpty else { return Double.infinity }
+        
+        let n = points1.count
+        let m = points2.count
+        
+        var dp = Array(repeating: Array(repeating: -1.0, count: m), count: n)
+        
+        func computeFrechet(_ i: Int, _ j: Int) -> Double {
+            if dp[i][j] >= 0 { return dp[i][j] }
+            
+            let dx = Double(points1[i].x - points2[j].x)
+            let dy = Double(points1[i].y - points2[j].y)
+            let dist = sqrt(dx * dx + dy * dy)
+            
+            if i == 0 && j == 0 {
+                dp[i][j] = dist
+            } else if i == 0 {
+                dp[i][j] = max(computeFrechet(i, j - 1), dist)
+            } else if j == 0 {
+                dp[i][j] = max(computeFrechet(i - 1, j), dist)
+            } else {
+                let minPrev = min(computeFrechet(i - 1, j),
+                                 min(computeFrechet(i, j - 1),
+                                     computeFrechet(i - 1, j - 1)))
+                dp[i][j] = max(minPrev, dist)
+            }
+            
+            return dp[i][j]
+        }
+        
+        return computeFrechet(n - 1, m - 1)
+    }
+    
     // MARK: - Prior Probability
     
     /// Calculate prior probability based on stroke order
@@ -467,13 +668,28 @@ class StrokeAnalyzer {
     
     // MARK: - Optimal Assignment Algorithm
     
+    /// Configuration for decomposed error weights
+    struct ErrorWeights {
+        var shapeWeight: Double = 0
+        var sizeWeight: Double = 0.1
+        var distanceWeight: Double = 0.6
+        var angleWeight: Double = 0.3
+        
+        static let `default` = ErrorWeights()
+        static let shapeOnly = ErrorWeights(shapeWeight: 1.0, sizeWeight: 0.0, distanceWeight: 0.0, angleWeight: 0.0)
+        static let noAngle = ErrorWeights(shapeWeight: 0.5, sizeWeight: 0.25, distanceWeight: 0.25, angleWeight: 0.0)
+    }
+    
     /// Find optimal stroke assignment that maximizes total posterior probability
     /// Uses Hungarian algorithm approach for maximum weight bipartite matching
     /// Returns array where index is user stroke index, value is assigned reference stroke index (or nil if unassigned)
     static func findOptimalAssignment(userStrokes: [Stroke], 
                                      referenceStrokes: [ReferenceStroke],
                                      priorSigma: Double = 2.0,
-                                     useUniformPrior: Bool = true) -> [Int?] {
+                                     useUniformPrior: Bool = true,
+                                     errorThreshold: Double = Double.infinity,
+                                     useDecomposedError: Bool = true,
+                                     errorWeights: ErrorWeights = .default) -> [Int?] {
         let numUser = userStrokes.count
         let numRef = referenceStrokes.count
         
@@ -481,23 +697,66 @@ class StrokeAnalyzer {
             return Array(repeating: nil, count: numUser)
         }
         
-        // Calculate posterior probability matrix (likelihood × prior)
-        // posterior[i][j] = P(user_i matches ref_j)
-        var posteriorMatrix: [[Double]] = []
+        // Step 1: Calculate error for each (user stroke, reference stroke) pair
+        var errorMatrix: [[Double]] = []
+        var decomposedMatrix: [[DecomposedError]] = []  // Store decomposed errors for debugging
         
-        for (userIdx, userStroke) in userStrokes.enumerated() {
+        for userStroke in userStrokes {
+            var errorRow: [Double] = []
+            var decomposedRow: [DecomposedError] = []
+            
+            for refStroke in referenceStrokes {
+                if useDecomposedError {
+                    let decomposed = calculateDecomposedError(userStroke: userStroke, referenceStroke: refStroke)
+                    decomposedRow.append(decomposed)
+                    let combinedError = decomposed.combinedError(
+                        shapeWeight: errorWeights.shapeWeight,
+                        sizeWeight: errorWeights.sizeWeight,
+                        distanceWeight: errorWeights.distanceWeight,
+                        angleWeight: errorWeights.angleWeight
+                    )
+                    errorRow.append(combinedError)
+                } else {
+                    // Legacy: use raw Fréchet distance
+                    let frechetDist = calculateFrechetDistance(userStroke: userStroke, referenceStroke: refStroke)
+                    errorRow.append(frechetDist)
+                    decomposedRow.append(DecomposedError(shapeError: frechetDist, sizeError: 0, distanceError: 0, angleError: 0))
+                }
+            }
+            errorMatrix.append(errorRow)
+            decomposedMatrix.append(decomposedRow)
+        }
+        
+        // Step 2: Find min error for each user stroke and filter out strokes above threshold
+        var validUserIndices: [Int] = []
+        for userIdx in 0..<numUser {
+            let minError = errorMatrix[userIdx].min() ?? Double.infinity
+            if minError <= errorThreshold {
+                validUserIndices.append(userIdx)
+            }
+        }
+        
+        // If no valid strokes, return all nil
+        guard !validUserIndices.isEmpty else {
+            return Array(repeating: nil, count: numUser)
+        }
+        
+        // Step 3: Build posterior matrix only for valid strokes
+        var posteriorMatrix: [[Double]] = []
+        for userIdx in validUserIndices {
             var row: [Double] = []
-            for (refIdx, refStroke) in referenceStrokes.enumerated() {
-                // Calculate likelihood using Fréchet distance
-                let frechetDist = calculateFrechetDistance(userStroke: userStroke, referenceStroke: refStroke)
-                // Convert distance to likelihood (smaller distance = higher likelihood)
-                // Using exponential decay: likelihood = exp(-distance)
-                let likelihood = exp(-frechetDist)
+            for refIdx in 0..<numRef {
+                let error = errorMatrix[userIdx][refIdx]
+                
+                // Convert error to likelihood (smaller error = higher likelihood)
+                // Use temperature scaling to control sharpness of distribution
+                let temperature = 0.5  // Lower = sharper distinction between good/bad matches
+                let likelihood = exp(-error / temperature)
                 
                 // Calculate prior based on stroke order (or use uniform prior)
                 let prior: Double
                 if useUniformPrior {
-                    prior = 1.0 / Double(numRef)  // Uniform prior (no stroke order preference)
+                    prior = 1.0 / Double(numRef)
                 } else {
                     prior = calculatePrior(userStrokeIndex: userIdx, 
                                           referenceStrokeIndex: refIdx,
@@ -512,30 +771,120 @@ class StrokeAnalyzer {
             posteriorMatrix.append(row)
         }
         
-        // Find optimal assignment using greedy approach
-        // For a proper Hungarian algorithm, we'd need a more complex implementation
-        // This greedy approach iteratively assigns the highest posterior probability
-        var assignments: [Int?] = Array(repeating: nil, count: numUser)
-        var usedRefStrokes = Set<Int>()
+        // Step 4: Run Hungarian on valid strokes only
+        let validAssignments = hungarianAlgorithm(posteriorMatrix: posteriorMatrix, numUser: validUserIndices.count, numRef: numRef)
         
-        // Create list of all possible assignments with their posteriors
-        var candidates: [(userIdx: Int, refIdx: Int, posterior: Double)] = []
-        for userIdx in 0..<numUser {
-            for refIdx in 0..<numRef {
-                candidates.append((userIdx, refIdx, posteriorMatrix[userIdx][refIdx]))
+        // Step 5: Map back to original indices
+        var assignments: [Int?] = Array(repeating: nil, count: numUser)
+        for (i, userIdx) in validUserIndices.enumerated() {
+            assignments[userIdx] = validAssignments[i]
+        }
+        
+        return assignments
+    }
+    
+    /// Hungarian algorithm for optimal bipartite matching
+    /// Finds the assignment that maximizes total posterior probability
+    /// - Parameters:
+    ///   - posteriorMatrix: Matrix where posteriorMatrix[i][j] = P(user_i matches ref_j)
+    ///   - numUser: Number of user strokes
+    ///   - numRef: Number of reference strokes
+    /// - Returns: Array where index is user stroke index, value is assigned reference stroke index (or nil)
+    private static func hungarianAlgorithm(posteriorMatrix: [[Double]], numUser: Int, numRef: Int) -> [Int?] {
+        // Handle edge cases
+        guard numUser > 0 && numRef > 0 else {
+            return Array(repeating: nil, count: numUser)
+        }
+        
+        // Create square cost matrix (we minimize cost, so use negative posterior)
+        // Pad to make it square if needed
+        let n = max(numUser, numRef)
+        var cost = Array(repeating: Array(repeating: 0.0, count: n), count: n)
+        
+        // Find max posterior for normalization to avoid numerical issues
+        var maxPosterior = 0.0
+        for i in 0..<numUser {
+            for j in 0..<numRef {
+                maxPosterior = max(maxPosterior, posteriorMatrix[i][j])
             }
         }
         
-        // Sort by posterior probability (descending)
-        candidates.sort { $0.posterior > $1.posterior }
+        // Fill cost matrix: cost = maxPosterior - posterior (to convert max to min problem)
+        for i in 0..<n {
+            for j in 0..<n {
+                if i < numUser && j < numRef {
+                    cost[i][j] = maxPosterior - posteriorMatrix[i][j]
+                } else {
+                    // Dummy rows/columns get max cost
+                    cost[i][j] = maxPosterior
+                }
+            }
+        }
         
-        // Greedily assign strokes
-        var usedUserStrokes = Set<Int>()
-        for candidate in candidates {
-            if !usedUserStrokes.contains(candidate.userIdx) && !usedRefStrokes.contains(candidate.refIdx) {
-                assignments[candidate.userIdx] = candidate.refIdx
-                usedUserStrokes.insert(candidate.userIdx)
-                usedRefStrokes.insert(candidate.refIdx)
+        // Hungarian algorithm (Kuhn-Munkres)
+        // u[i] and v[j] are potentials for rows and columns
+        var u = Array(repeating: 0.0, count: n + 1)
+        var v = Array(repeating: 0.0, count: n + 1)
+        // p[j] = row assigned to column j (1-indexed, 0 means unassigned)
+        var p = Array(repeating: 0, count: n + 1)
+        // way[j] = previous column in alternating path
+        var way = Array(repeating: 0, count: n + 1)
+        
+        for i in 1...n {
+            // Start augmenting path from row i
+            p[0] = i
+            var j0 = 0  // Current column (0 is virtual)
+            var minv = Array(repeating: Double.infinity, count: n + 1)
+            var used = Array(repeating: false, count: n + 1)
+            
+            repeat {
+                used[j0] = true
+                let i0 = p[j0]
+                var delta = Double.infinity
+                var j1 = 0
+                
+                for j in 1...n {
+                    if !used[j] {
+                        let cur = cost[i0 - 1][j - 1] - u[i0] - v[j]
+                        if cur < minv[j] {
+                            minv[j] = cur
+                            way[j] = j0
+                        }
+                        if minv[j] < delta {
+                            delta = minv[j]
+                            j1 = j
+                        }
+                    }
+                }
+                
+                // Update potentials
+                for j in 0...n {
+                    if used[j] {
+                        u[p[j]] += delta
+                        v[j] -= delta
+                    } else {
+                        minv[j] -= delta
+                    }
+                }
+                
+                j0 = j1
+            } while p[j0] != 0
+            
+            // Reconstruct path
+            repeat {
+                let j1 = way[j0]
+                p[j0] = p[j1]
+                j0 = j1
+            } while j0 != 0
+        }
+        
+        // Extract assignments (p[j] = row assigned to column j)
+        var assignments: [Int?] = Array(repeating: nil, count: numUser)
+        for j in 1...n {
+            let row = p[j] - 1  // Convert back to 0-indexed
+            let col = j - 1
+            if row >= 0 && row < numUser && col < numRef {
+                assignments[row] = col
             }
         }
         
@@ -638,7 +987,8 @@ class StrokeAnalyzer {
             userStrokes: normalizedUserStrokes,
             referenceStrokes: referenceStrokes,
             priorSigma: priorSigma,
-            useUniformPrior: useUniformPrior
+            useUniformPrior: useUniformPrior,
+            errorThreshold: errorThreshold
         )
         
         // Build stroke results based on assignments

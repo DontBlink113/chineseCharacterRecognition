@@ -9,7 +9,7 @@ struct CharacterSetsView: View {
 
     var body: some View {
         ZStack {
-            Color(red: 0.68, green: 0.85, blue: 0.9)
+            Color("Secondary100")
                 .ignoresSafeArea()
             
             ScrollView {
@@ -17,76 +17,33 @@ struct CharacterSetsView: View {
                     // Title
                     Text("Character Sets")
                         .font(.system(size: 40)).bold()
-                        .foregroundColor(Color("Blue 900"))
+                        .foregroundColor(Color("Primary900"))
                         .padding(.top, 20)
-                    // Add New Set Card
-                    VStack(alignment: .leading, spacing: 16) {
-                        Text("Add New Set")
-                            .font(.title2).bold()
-                            .foregroundColor(Color("Blue 900"))
-                        
-                        TextField("Set Name", text: $name)
-                            .textFieldStyle(.plain)
-                            .padding(12)
-                            .background(Color.white.opacity(0.9))
-                            .cornerRadius(8)
-                        
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text("Characters")
-                                .font(.subheadline)
-                                .foregroundColor(Color("Blue 900"))
-                            TextEditor(text: $characters)
-                                .frame(minHeight: 120)
-                                .padding(8)
-                                .background(Color.white.opacity(0.9))
-                                .cornerRadius(8)
-                                .overlay(
-                                    RoundedRectangle(cornerRadius: 8)
-                                        .stroke(Color("Blue 700").opacity(0.3), lineWidth: 1)
-                                )
-                        }
-                        
-                        Button(action: {
-                            guard !name.isEmpty && !characters.isEmpty else { return }
-                            let hanzi = extractHanzi(from: characters)
-                            if hanzi.isEmpty {
-                                addSetErrorMessage = "No Chinese characters found. Please enter at least one Chinese character."
-                                showAddSetError = true
-                                return
-                            }
-                            let filtered = hanzi.joined()
-                            store.add(name: name, characters: filtered)
-                            name = ""
-                            characters = ""
-                        }) {
-                            Text("Add Set")
-                                .font(.headline)
-                                .foregroundColor(Color("Sand 100"))
-                                .frame(maxWidth: .infinity)
-                                .padding(.vertical, 14)
-                                .background(Color("Blue 700"))
-                                .cornerRadius(10)
-                                .shadow(color: Color("Blue 700").opacity(0.3), radius: 8, x: 0, y: 4)
-                        }
-                        .disabled(name.isEmpty || characters.isEmpty)
-                        .opacity(name.isEmpty || characters.isEmpty ? 0.6 : 1.0)
-                    }
-                    .padding(20)
-                    .background(Color.white.opacity(0.7))
-                    .cornerRadius(16)
-                    .shadow(color: Color.black.opacity(0.1), radius: 10, x: 0, y: 4)
-                    .padding(.horizontal, 24)
                     
+                    // Create Flashcard Set Button
+                    NavigationLink(destination: FlashcardSetCreationView()) {
+                        HStack {
+                            Image(systemName: "plus.rectangle.on.rectangle")
+                                .font(.title3)
+                            Text("Create Flashcard Set")
+                                .fontWeight(.semibold)
+                        }
+                        .foregroundColor(Color("Secondary100"))
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 14)
+                        .background(Color("Primary600"))
+                        .cornerRadius(12)
+                    }
                     // Saved Sets Section
                     VStack(alignment: .leading, spacing: 16) {
                         Text("Saved Sets")
                             .font(.title2).bold()
-                            .foregroundColor(Color("Blue 900"))
+                            .foregroundColor(Color("Primary900"))
                             .padding(.horizontal, 20)
                         
                         if store.sets.isEmpty {
                             Text("No sets yet. Add your first set above!")
-                                .foregroundColor(Color("Neutral 700"))
+                                .foregroundColor(Color("Neutral700"))
                                 .padding(20)
                                 .frame(maxWidth: .infinity)
                         } else {
@@ -97,7 +54,7 @@ struct CharacterSetsView: View {
                                             HStack(spacing: 8) {
                                                 Text(set.name)
                                                     .font(.headline)
-                                                    .foregroundColor(Color("Blue 900"))
+                                                    .foregroundColor(Color("Primary900"))
                                                 
                                                 // Definition status indicator
                                                 if set.hasDefinitions {
@@ -107,36 +64,36 @@ struct CharacterSetsView: View {
                                                 } else {
                                                     Image(systemName: "exclamationmark.circle")
                                                         .font(.caption)
-                                                        .foregroundColor(Color("Orange 200"))
+                                                        .foregroundColor(Color("Accent200"))
                                                 }
                                             }
                                             Text("\(extractHanzi(from: set.characters).count) characters")
                                                 .font(.caption)
-                                                .foregroundColor(Color("Neutral 700"))
+                                                .foregroundColor(Color("Neutral700"))
                                         }
                                         Spacer()
                                         if store.activeSetId == set.id {
                                             Text("Active")
                                                 .font(.caption)
                                                 .fontWeight(.semibold)
-                                                .foregroundColor(Color("Blue 700"))
+                                                .foregroundColor(Color("Primary700"))
                                                 .padding(.horizontal, 12)
                                                 .padding(.vertical, 6)
-                                                .background(Color("Blue 700").opacity(0.2))
+                                                .background(Color("Primary700").opacity(0.2))
                                                 .cornerRadius(12)
                                         } else {
                                             Button(action: { store.setActive(set) }) {
                                                 Text("Use")
                                                     .font(.caption)
                                                     .fontWeight(.semibold)
-                                                    .foregroundColor(Color("Blue 700"))
+                                                    .foregroundColor(Color("Primary700"))
                                                     .padding(.horizontal, 16)
                                                     .padding(.vertical, 6)
                                                     .background(Color.white)
                                                     .cornerRadius(12)
                                                     .overlay(
                                                         RoundedRectangle(cornerRadius: 12)
-                                                            .stroke(Color("Blue 700"), lineWidth: 1.5)
+                                                            .stroke(Color("Primary700"), lineWidth: 1.5)
                                                     )
                                             }
                                         }
@@ -150,7 +107,7 @@ struct CharacterSetsView: View {
                                             Text("Edit List")
                                         }
                                         .font(.subheadline)
-                                        .foregroundColor(Color("Blue 700"))
+                                        .foregroundColor(Color("Primary700"))
                                         .frame(maxWidth: .infinity)
                                         .padding(.vertical, 10)
                                         .background(Color.white)

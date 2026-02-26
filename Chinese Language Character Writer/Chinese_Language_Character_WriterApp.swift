@@ -9,12 +9,15 @@ import SwiftUI
 
 @main
 struct Chinese_Language_Character_WriterApp: App {
+    @StateObject private var fsrsService = FSRSService.shared
+    
     var body: some Scene {
         WindowGroup {
             NavigationStack {
                 HomeView()
             }
             .environmentObject(LearningSetsStore())
+            .environmentObject(fsrsService)
             .navigationViewStyle(.stack) // This ensures a standard navigation stack on all devices
             .preferredColorScheme(.light)
         }

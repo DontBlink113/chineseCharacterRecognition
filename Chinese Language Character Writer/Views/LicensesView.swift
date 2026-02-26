@@ -21,7 +21,7 @@ struct LicensesView: View {
         }
         .navigationTitle("Licenses")
         .navigationBarTitleDisplayMode(.inline)
-        .background(Color(red: 0.68, green: 0.85, blue: 0.9).ignoresSafeArea())
+        .background(Color("Secondary100").ignoresSafeArea())
         .task { await loadLicenses() }
     }
     
@@ -71,7 +71,7 @@ struct LicenseDetailView: View {
             } else {
                 Text(text)
                     .font(.system(.body, design: .monospaced))
-                    .foregroundColor(Color("Blue 900"))
+                    .foregroundColor(Color("Primary900"))
                     .padding()
             }
         }

@@ -1,272 +1,941 @@
 import SwiftUI
 import UIKit
 import QuartzCore
+import FSRS
 
-private struct VariableWidthStrokeView: View {
+// MARK: - Shared Stroke Rendering Utilities
+
+/// Single source of truth for variable-width stroke geometry.
+/// Previously copy-pasted into 4+ locations.
+enum VariableStrokeStyle {
+    static func width(
+        pressure: CGFloat,
+        speed: CGFloat,
+        isNonPencil: Bool,
+        speedSensitivity: Double,
+        pressureSensitivity: Double,
+        sizeFactor: Double
+    ) -> CGFloat {
+        let minW: CGFloat = 8.0 * CGFloat(sizeFactor)
+        let maxW: CGFloat = 28.0 * CGFloat(sizeFactor)
+        let v0: CGFloat = 1500.0 / max(0.1, CGFloat(speedSensitivity))
+        let factor = 1.0 / (1.0 + max(0, speed) / v0)
+        let pEff = max(0, min(1, pressure * CGFloat(pressureSensitivity)))
+        let base = minW + (maxW - minW) * pEff * factor
+        return base * (isNonPencil ? 0.5 : 1.0)
+    }
+
+    /// Smoothed width using exponential moving average over previous segment.
+    static func smoothed(_ newWidth: CGFloat, previous: CGFloat) -> CGFloat {
+        previous > 0 ? 0.7 * previous + 0.3 * newWidth : newWidth
+    }
+}
+
+// MARK: - Single source-of-truth SVG parser
+/// Previously duplicated in ReferenceStrokeShapeView, ReferenceMaskAnimationContainerView,
+/// SVGMaskRevealContainerView, and FlashcardPracticeView.
+enum SVGParser {
+    enum Segment {
+        case moveTo(CGPoint)
+        case lineTo(CGPoint)
+        case quadCurve(control: CGPoint, end: CGPoint)
+        case cubicCurve(control1: CGPoint, control2: CGPoint, end: CGPoint)
+        case closePath
+    }
+
+    static func parse(_ svgPath: String) -> [Segment] {
+        var segments: [Segment] = []
+        let parts = svgPath.split(separator: " ")
+        var i = parts.startIndex
+
+        func advance(_ n: Int) { i = parts.index(i, offsetBy: n) }
+        func num(_ offset: Int) -> Double? { Double(parts[parts.index(i, offsetBy: offset)]) }
+
+        while i < parts.endIndex {
+            switch String(parts[i]) {
+            case "M":
+                guard let x = num(1), let y = num(2) else { advance(1); continue }
+                segments.append(.moveTo(CGPoint(x: x, y: y))); advance(3)
+            case "L":
+                guard let x = num(1), let y = num(2) else { advance(1); continue }
+                segments.append(.lineTo(CGPoint(x: x, y: y))); advance(3)
+            case "Q":
+                guard let x1 = num(1), let y1 = num(2), let x = num(3), let y = num(4)
+                else { advance(1); continue }
+                segments.append(.quadCurve(control: CGPoint(x: x1, y: y1), end: CGPoint(x: x, y: y)))
+                advance(5)
+            case "C":
+                guard let x1 = num(1), let y1 = num(2), let x2 = num(3),
+                      let y2 = num(4), let x = num(5), let y = num(6)
+                else { advance(1); continue }
+                segments.append(.cubicCurve(
+                    control1: CGPoint(x: x1, y: y1),
+                    control2: CGPoint(x: x2, y: y2),
+                    end: CGPoint(x: x, y: y)))
+                advance(7)
+            case "Z", "z":
+                segments.append(.closePath); advance(1)
+            default:
+                advance(1)
+            }
+        }
+        return segments
+    }
+
+    /// Scale a normalised [0,1] SVG point into canvas space with a 10% inset on each side.
+    static func scaleWithInset(_ point: CGPoint, canvasSize: CGFloat) -> CGPoint {
+        let inset: CGFloat = 0.10
+        let scale: CGFloat = 1.0 - inset * 2.0
+        return CGPoint(
+            x: (point.x * scale + inset) * canvasSize,
+            y: (point.y * scale + inset) * canvasSize
+        )
+    }
+
+    static func bezierPath(from svgPath: String, canvasSize: CGFloat) -> UIBezierPath {
+        let path = UIBezierPath()
+        for seg in parse(svgPath) {
+            switch seg {
+            case .moveTo(let p):   path.move(to: scaleWithInset(p, canvasSize: canvasSize))
+            case .lineTo(let p):   path.addLine(to: scaleWithInset(p, canvasSize: canvasSize))
+            case .quadCurve(let c, let e):
+                path.addQuadCurve(to: scaleWithInset(e, canvasSize: canvasSize),
+                                  controlPoint: scaleWithInset(c, canvasSize: canvasSize))
+            case .cubicCurve(let c1, let c2, let e):
+                path.addCurve(to: scaleWithInset(e, canvasSize: canvasSize),
+                              controlPoint1: scaleWithInset(c1, canvasSize: canvasSize),
+                              controlPoint2: scaleWithInset(c2, canvasSize: canvasSize))
+            case .closePath:
+                path.close()
+            }
+        }
+        return path
+    }
+
+    /// SwiftUI Path variant (used by ReferenceStrokeShapeView).
+    static func swiftUIPath(from svgPath: String, canvasSize: CGFloat) -> Path {
+        var path = Path()
+        for seg in parse(svgPath) {
+            switch seg {
+            case .moveTo(let p):   path.move(to: scaleWithInset(p, canvasSize: canvasSize))
+            case .lineTo(let p):   path.addLine(to: scaleWithInset(p, canvasSize: canvasSize))
+            case .quadCurve(let c, let e):
+                path.addQuadCurve(to: scaleWithInset(e, canvasSize: canvasSize),
+                                  control: scaleWithInset(c, canvasSize: canvasSize))
+            case .cubicCurve(let c1, let c2, let e):
+                path.addCurve(to: scaleWithInset(e, canvasSize: canvasSize),
+                              control1: scaleWithInset(c1, canvasSize: canvasSize),
+                              control2: scaleWithInset(c2, canvasSize: canvasSize))
+            case .closePath:
+                path.closeSubpath()
+            }
+        }
+        return path
+    }
+
+    /// Parse character to get reference strokes using StrokeAnalyzer
+    static func parseCharacter(_ character: String) -> [ReferenceStroke] {
+        let graphicsData = StrokeAnalyzer.loadGraphicsData()
+        guard let refChar = graphicsData[character] else { return [] }
+        return StrokeAnalyzer.normalizeReferenceStrokes(refChar.medians, svgPaths: refChar.strokes)
+    }
+}
+
+// MARK: - VariableWidthStrokeView
+
+struct VariableWidthStrokeView: View {
     let stroke: Stroke
     let color: Color
     let speedSensitivity: Double
     let pressureSensitivity: Double
     let sizeFactor: Double
-    
+
     var body: some View {
         Canvas { context, _ in
             let pts = stroke.displayPoints
             guard !pts.isEmpty else { return }
-            let isLikelyNonPencil = pts.allSatisfy { $0.pressure >= 0.999 }
-            func widthFor(_ pressure: CGFloat, _ speed: CGFloat) -> CGFloat {
-                let minW: CGFloat = 8.0 * CGFloat(sizeFactor)
-                let maxW: CGFloat = 28.0 * CGFloat(sizeFactor)
-                let baseV0: CGFloat = 1500.0
-                let v0: CGFloat = baseV0 / max(0.1, CGFloat(speedSensitivity))
-                let v = max(0.0, speed)
-                let factor = 1.0 / (1.0 + v / v0)
-                let pEff = max(0.0, min(1.0, pressure * CGFloat(pressureSensitivity)))
-                let base = minW + (maxW - minW) * pEff * factor
-                return base * (isLikelyNonPencil ? 0.5 : 1.0)
+            let isNonPencil = pts.allSatisfy { $0.pressure >= 0.999 }
+
+            func w(_ a: StrokePoint, _ b: StrokePoint) -> CGFloat {
+                VariableStrokeStyle.width(
+                    pressure: (a.pressure + b.pressure) * 0.5,
+                    speed: max(0.001, (a.speed + b.speed) * 0.5),
+                    isNonPencil: isNonPencil,
+                    speedSensitivity: speedSensitivity,
+                    pressureSensitivity: pressureSensitivity,
+                    sizeFactor: sizeFactor
+                )
             }
+
             if pts.count == 1 {
-                let w = widthFor(pts[0].pressure, pts[0].speed)
+                let raw = VariableStrokeStyle.width(pressure: pts[0].pressure, speed: pts[0].speed,
+                                            isNonPencil: isNonPencil,
+                                            speedSensitivity: speedSensitivity,
+                                            pressureSensitivity: pressureSensitivity,
+                                            sizeFactor: sizeFactor)
                 let p = pts[0].location
-                let rect = CGRect(x: p.x - w/2, y: p.y - w/2, width: w, height: w)
-                context.fill(Path(ellipseIn: rect), with: .color(color))
-            } else {
-                var prevW: CGFloat = 0
-                for i in 1..<pts.count {
-                    let p0 = pts[i-1]
-                    let p1 = pts[i]
-                    let speed = max(0.001, (p0.speed + p1.speed) * 0.5)
-                    let pressure = (p0.pressure + p1.pressure) * 0.5
-                    var w = widthFor(pressure, speed)
-                    if prevW > 0 { w = 0.7 * prevW + 0.3 * w }
-                    prevW = w
-                    var seg = Path()
-                    seg.move(to: p0.location)
-                    seg.addLine(to: p1.location)
-                    context.stroke(seg, with: .color(color), style: StrokeStyle(lineWidth: w, lineCap: .round, lineJoin: .round))
-                }
+                context.fill(
+                    Path(ellipseIn: CGRect(x: p.x - raw/2, y: p.y - raw/2, width: raw, height: raw)),
+                    with: .color(color))
+                return
+            }
+
+            var prevW: CGFloat = 0
+            for i in 1..<pts.count {
+                let p0 = pts[i-1].location
+                let p1 = pts[i].location
+                var segW = w(pts[i-1], pts[i])
+                segW = VariableStrokeStyle.smoothed(segW, previous: prevW)
+                prevW = segW
+
+                var seg = Path()
+                seg.move(to: p0)
+                seg.addLine(to: p1)
+                context.stroke(seg, with: .color(color),
+                               style: .init(lineWidth: segW, lineCap: .round, lineJoin: .round))
             }
         }
     }
 }
 
-private struct TouchCaptureView: UIViewRepresentable {
+// MARK: - TouchCaptureView
+
+struct TouchCaptureView: UIViewRepresentable {
     var onBegan: (CGPoint, CGFloat) -> Void
     var onMoved: (CGPoint, CGFloat) -> Void
     var onEnded: () -> Void
-    
-    class TouchView: UIView {
-        var onBegan: ((CGPoint, CGFloat) -> Void)?
-        var onMoved: ((CGPoint, CGFloat) -> Void)?
-        var onEnded: (() -> Void)?
-        
-        override init(frame: CGRect) {
-            super.init(frame: frame)
+    var drawingBounds: CGRect?
+
+    func makeUIView(context: Context) -> _TouchView { _TouchView(owner: self) }
+    func updateUIView(_ uiView: _TouchView, context: Context) { uiView.owner = self }
+
+    // Prefixed with _ so it stays internal; callers only see TouchCaptureView.
+    final class _TouchView: UIView {
+        var owner: TouchCaptureView
+        private var active = false
+
+        init(owner: TouchCaptureView) {
+            self.owner = owner
+            super.init(frame: .zero)
             isMultipleTouchEnabled = false
             backgroundColor = .clear
         }
-        required init?(coder: NSCoder) { super.init(coder: coder) }
-        
+        required init?(coder: NSCoder) { fatalError() }
+
+        private func pressure(from touch: UITouch) -> CGFloat {
+            touch.type == .pencil && touch.maximumPossibleForce > 0
+                ? max(0, min(1, touch.force / touch.maximumPossibleForce))
+                : 1.0
+        }
+
         override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) {
             guard let t = touches.first else { return }
-            let p = t.type == .pencil ? (t.maximumPossibleForce > 0 ? t.force / t.maximumPossibleForce : 1.0) : 1.0
             let loc = t.location(in: self)
-            onBegan?(loc, max(0.0, min(1.0, p)))
+            if let bounds = owner.drawingBounds, !bounds.contains(loc) {
+                next?.touchesBegan(touches, with: event); return
+            }
+            active = true
+            owner.onBegan(loc, pressure(from: t))
         }
+
         override func touchesMoved(_ touches: Set<UITouch>, with event: UIEvent?) {
-            guard let t = touches.first else { return }
-            let p = t.type == .pencil ? (t.maximumPossibleForce > 0 ? t.force / t.maximumPossibleForce : 1.0) : 1.0
-            let loc = t.location(in: self)
-            onMoved?(loc, max(0.0, min(1.0, p)))
+            guard let t = touches.first, active else { return }
+            owner.onMoved(t.location(in: self), pressure(from: t))
         }
+
         override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent?) {
-            onEnded?()
+            guard active else { return }
+            active = false
+            owner.onEnded()
         }
+
         override func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent?) {
-            onEnded?()
+            guard active else { return }
+            active = false
+            owner.onEnded()
         }
-    }
-    
-    func makeUIView(context: Context) -> TouchView {
-        let v = TouchView()
-        v.onBegan = onBegan
-        v.onMoved = onMoved
-        v.onEnded = onEnded
-        return v
-    }
-    
-    func updateUIView(_ uiView: TouchView, context: Context) {
-        uiView.onBegan = onBegan
-        uiView.onMoved = onMoved
-        uiView.onEnded = onEnded
+
+        // Block scroll gestures that start inside the drawing area.
+        override func gestureRecognizerShouldBegin(_ gr: UIGestureRecognizer) -> Bool {
+            guard let pan = gr as? UIPanGestureRecognizer,
+                  let bounds = owner.drawingBounds else { return true }
+            return !bounds.contains(pan.location(in: self))
+        }
     }
 }
 
-struct FlashcardPracticeView: View {
-    @EnvironmentObject var store: LearningSetsStore
-    @StateObject private var viewModel = DrawingViewModel()
-    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+// MARK: - ReferenceStrokeShapeView
 
-    @State private var selectedSetId: UUID? = nil
-    @State private var shuffle: Bool = false
-    @State private var inSession: Bool = false
+struct ReferenceStrokeShapeView: Shape {
+    let referenceStroke: ReferenceStroke
+    let canvasSize: CGFloat
 
-    @State private var currentIndex: Int = 0
-    @State private var currentPrompt: String = ""
-    @State private var currentCharacter: String = ""
-    @State private var analysisResult: CharacterAnalysisResult? = nil
-    @State private var showFeedback: Bool = false
-    @State private var isPerfectCharacter: Bool = false
-    @State private var canvasSize: CGFloat = 400  // Actual canvas size for bounding box calculation
-    @State private var currentBoundingBox: CGRect? = nil  // Bounding box used for current analysis
-    @State private var drawingAreaSize: CGSize = .zero  // Full drawing area's size (may not be square)
-    
-    // Tunable parameters (baseline algorithm)
-    @State private var showSettings: Bool = false
-    @State private var showHelpGuide: Bool = false
-    @AppStorage("boundingBoxSize") private var boundingBoxSize: Double = 0.5  // Persisted size of guide box
-    @AppStorage("secondsPerStroke") private var secondsPerStroke: Double = 1  // Persisted animation speed
-    @AppStorage("enableStrokeRemoval") private var enableStrokeRemoval: Bool = false  // Whether to mark bad strokes as unmatched
-    @AppStorage("strokeSpeedSensitivity") private var strokeSpeedSensitivity: Double = 1.5  // >1 = more speed influence
-    @AppStorage("strokePressureSensitivity") private var strokePressureSensitivity: Double = 1.5  // >1 = more pressure influence
-    @AppStorage("strokeSizeFactor") private var strokeSizeFactor: Double = 1  // overall size scale
-    @State private var replayNonce: Int = 0  // Changing this replays the animation
-    @State private var perfectStreakCount: Int = 0
-    @State private var sessionAttempted: Set<Int> = []
-    @State private var sessionPerfectCount: Int = 0
-    @State private var showCongrats: Bool = false
-    @State private var snapshotUserStrokes: [Stroke] = []
-    @State private var snapshotBoundingBox: CGRect? = nil
-    @State private var prevStreakBeforeFinish: Int = 0
+    func path(in rect: CGRect) -> Path {
+        SVGParser.swiftUIPath(from: referenceStroke.svgPath, canvasSize: canvasSize)
+    }
+}
 
-    private var selectedSet: LearningSet? {
-        if let id = selectedSetId { return store.sets.first { $0.id == id } }
-        return store.activeSet
+// MARK: - CALayer-based mask-reveal animation
+//
+// Key performance fix: instead of one CAShapeLayer per stroke *segment* (potentially
+// 200 layers per stroke), we render the entire variable-width stroke into a single
+// CGImage and use that as the outline layer's contents. The mask is still a single
+// CAShapeLayer animating strokeEnd along the median path.
+
+final class MaskRevealContainerView: UIView {
+
+    // MARK: Cached state
+    private var builtNonce: Int = -1
+    private var builtRefCount: Int = 0
+    private var builtUserCount: Int = 0
+    private var isPaused = false
+
+    // Per-stroke layers (one pair per reference stroke)
+    private var outlineLayers: [CALayer] = []
+    private var maskLayers:   [CAShapeLayer] = []
+
+    // MARK: Public entry point
+
+    struct Config {
+        var referenceStrokes: [ReferenceStroke]
+        var userStrokes:      [Stroke]
+        var strokeResults:    [StrokeAnalysisResult]
+        var originalCanvasSize: CGFloat
+        var boundingBox:      CGRect?
+        var canvasSize:       CGFloat
+        var totalDuration:    Double
+        var replayNonce:      Int
+        var pause:            Bool
+        var speedSensitivity:    Double
+        var pressureSensitivity: Double
+        var sizeFactor:          Double
     }
 
-    private var flashcardItems: [FlashcardItem] {
-        guard let s = selectedSet, let items = s.items else { return [] }
-        return items
+    func configure(_ cfg: Config) {
+        guard !cfg.referenceStrokes.isEmpty else { return }
+
+        // Pause / resume without rebuilding
+        handlePauseChange(cfg.pause)
+
+        // Build reverse map: refIndex → matched userStroke index
+        let refToUser: [Int: Int] = cfg.strokeResults.enumerated().reduce(into: [:]) { map, pair in
+            let (uIdx, result) = pair
+            if result.isMatched, let refIdx = result.bestMatchIndex { map[refIdx] = uIdx }
+        }
+
+        let needsRebuild = builtNonce    != cfg.replayNonce
+                        || builtRefCount != cfg.referenceStrokes.count
+                        || builtUserCount != cfg.userStrokes.count
+
+        if !needsRebuild {
+            updateLayersInPlace(cfg: cfg, refToUser: refToUser)
+            return
+        }
+
+        rebuild(cfg: cfg, refToUser: refToUser)
     }
 
-    private var setsWithDefinitions: [LearningSet] {
-        store.sets.filter { $0.hasDefinitions }
+    // MARK: Private helpers
+
+    private func handlePauseChange(_ shouldPause: Bool) {
+        if shouldPause && !isPaused {
+            let t = layer.convertTime(CACurrentMediaTime(), from: nil)
+            layer.speed = 0; layer.timeOffset = t; isPaused = true
+        } else if !shouldPause && isPaused {
+            let offset = layer.timeOffset
+            layer.speed = 1; layer.timeOffset = 0; layer.beginTime = 0
+            let drift = layer.convertTime(CACurrentMediaTime(), from: nil) - offset
+            layer.beginTime = drift; isPaused = false
+        }
     }
 
-    private var learningSetSelection: Binding<UUID?> {
-        Binding(
-            get: { selectedSetId ?? store.activeSetId },
-            set: { selectedSetId = $0 }
+    private func updateLayersInPlace(cfg: Config, refToUser: [Int: Int]) {
+        guard outlineLayers.count == cfg.referenceStrokes.count else { return }
+
+        for (refIdx, ref) in cfg.referenceStrokes.enumerated() {
+            guard refIdx < outlineLayers.count,
+                  refIdx < maskLayers.count else { continue }
+            let outlineLayer = outlineLayers[refIdx]
+            let maskLayer = maskLayers[refIdx]
+
+            if let uIdx = refToUser[refIdx], uIdx < cfg.userStrokes.count {
+                // Replace contents with freshly-rendered user stroke image
+                let color = strokeColor(refIdx: refIdx, userIdx: uIdx, results: cfg.strokeResults)
+                let img = renderUserStroke(cfg.userStrokes[uIdx],
+                                           canvasSize: cfg.canvasSize,
+                                           bbox: cfg.boundingBox,
+                                           color: color,
+                                           speedSensitivity: cfg.speedSensitivity,
+                                           pressureSensitivity: cfg.pressureSensitivity,
+                                           sizeFactor: cfg.sizeFactor)
+                outlineLayer.contents = img
+                outlineLayer.frame = CGRect(origin: .zero, size: CGSize(width: cfg.canvasSize, height: cfg.canvasSize))
+
+                // Mask follows user median path
+                let userPath = userMedianPath(cfg.userStrokes[uIdx],
+                                              canvasSize: cfg.canvasSize,
+                                              bbox: cfg.boundingBox)
+                maskLayer.path = userPath.cgPath
+                maskLayer.lineWidth = userMaskWidth(canvasSize: cfg.canvasSize,
+                                                    bbox: cfg.boundingBox,
+                                                    sizeFactor: cfg.sizeFactor)
+            } else {
+                // Revert to reference outline
+                let img = renderSVGOutline(ref.svgPath, canvasSize: cfg.canvasSize)
+                outlineLayer.contents = img
+                maskLayer.path = medianPath(ref.medianPoints, canvasSize: cfg.canvasSize).cgPath
+                maskLayer.lineWidth = referenceMaskWidth(ref: ref, canvasSize: cfg.canvasSize)
+            }
+        }
+    }
+
+    private func rebuild(cfg: Config, refToUser: [Int: Int]) {
+        layer.sublayers?.forEach { $0.removeFromSuperlayer() }
+        outlineLayers.removeAll(); maskLayers.removeAll()
+
+        let count = cfg.referenceStrokes.count
+        let perStroke = max(0.05, cfg.totalDuration / Double(count))
+        let base = layer.convertTime(CACurrentMediaTime(), from: nil)
+
+        for (refIdx, ref) in cfg.referenceStrokes.enumerated() {
+            // 1. Outline — rendered as a flat CGImage (no per-segment layer explosion)
+            let outlineLayer = CALayer()
+            outlineLayer.frame = CGRect(origin: .zero,
+                                        size: CGSize(width: cfg.canvasSize, height: cfg.canvasSize))
+            outlineLayer.contentsScale = UIScreen.main.scale
+
+            if let uIdx = refToUser[refIdx], uIdx < cfg.userStrokes.count {
+                let color = strokeColor(refIdx: refIdx, userIdx: uIdx, results: cfg.strokeResults)
+                outlineLayer.contents = renderUserStroke(cfg.userStrokes[uIdx],
+                                                          canvasSize: cfg.canvasSize,
+                                                          bbox: cfg.boundingBox,
+                                                          color: color,
+                                                          speedSensitivity: cfg.speedSensitivity,
+                                                          pressureSensitivity: cfg.pressureSensitivity,
+                                                          sizeFactor: cfg.sizeFactor)
+            } else {
+                outlineLayer.contents = renderSVGOutline(ref.svgPath, canvasSize: cfg.canvasSize)
+            }
+
+            // 2. Mask — single CAShapeLayer on the median path
+            let maskLayer = CAShapeLayer()
+            maskLayer.frame = outlineLayer.bounds
+            maskLayer.contentsScale = UIScreen.main.scale
+            maskLayer.strokeColor = UIColor.black.cgColor
+            maskLayer.fillColor   = UIColor.clear.cgColor
+            maskLayer.lineCap     = .round
+            maskLayer.lineJoin    = .round
+            maskLayer.strokeEnd   = 0
+
+            if let uIdx = refToUser[refIdx], uIdx < cfg.userStrokes.count {
+                maskLayer.path = userMedianPath(cfg.userStrokes[uIdx],
+                                                 canvasSize: cfg.canvasSize,
+                                                 bbox: cfg.boundingBox).cgPath
+                maskLayer.lineWidth = userMaskWidth(canvasSize: cfg.canvasSize,
+                                                    bbox: cfg.boundingBox,
+                                                    sizeFactor: cfg.sizeFactor)
+            } else {
+                maskLayer.path = medianPath(ref.medianPoints, canvasSize: cfg.canvasSize).cgPath
+                maskLayer.lineWidth = referenceMaskWidth(ref: ref, canvasSize: cfg.canvasSize)
+            }
+
+            outlineLayer.mask = maskLayer
+            layer.addSublayer(outlineLayer)
+            outlineLayers.append(outlineLayer)
+            maskLayers.append(maskLayer)
+
+            // 3. Animate strokeEnd
+            let anim            = CABasicAnimation(keyPath: "strokeEnd")
+            anim.fromValue      = 0
+            anim.toValue        = 1
+            anim.duration       = perStroke
+            anim.beginTime      = base + Double(refIdx) * perStroke
+            anim.timingFunction = CAMediaTimingFunction(name: .linear)
+            anim.fillMode       = .forwards
+            anim.isRemovedOnCompletion = false
+            maskLayer.add(anim, forKey: "reveal")
+        }
+
+        if isPaused {
+            let t = layer.convertTime(CACurrentMediaTime(), from: nil)
+            layer.speed = 0; layer.timeOffset = t
+        }
+
+        builtNonce     = cfg.replayNonce
+        builtRefCount  = cfg.referenceStrokes.count
+        builtUserCount = cfg.userStrokes.count
+    }
+
+    // MARK: Rendering helpers (CGImage, no extra layers)
+
+    /// Renders a user stroke as a CGImage using CoreGraphics — O(n points), not O(n layers).
+    private func renderUserStroke(
+        _ stroke: Stroke, canvasSize: CGFloat, bbox: CGRect?,
+        color: UIColor,
+        speedSensitivity: Double, pressureSensitivity: Double, sizeFactor: Double
+    ) -> CGImage? {
+        let size = CGSize(width: canvasSize, height: canvasSize)
+        UIGraphicsBeginImageContextWithOptions(size, false, UIScreen.main.scale)
+        defer { UIGraphicsEndImageContext() }
+        guard let ctx = UIGraphicsGetCurrentContext() else { return nil }
+
+        ctx.setLineCap(.round); ctx.setLineJoin(.round)
+
+        let pts = stroke.displayPoints
+        guard pts.count >= 2 else {
+            // Single dot
+            if let p = pts.first {
+                let mapped = mapPoint(p.location, canvasSize: canvasSize, bbox: bbox)
+                let r = VariableStrokeStyle.width(pressure: p.pressure, speed: p.speed,
+                                          isNonPencil: false,
+                                          speedSensitivity: speedSensitivity,
+                                          pressureSensitivity: pressureSensitivity,
+                                          sizeFactor: sizeFactor) * 0.5
+                ctx.setFillColor(color.cgColor)
+                ctx.fillEllipse(in: CGRect(x: mapped.x - r, y: mapped.y - r,
+                                           width: r*2, height: r*2))
+            }
+            return UIGraphicsGetCurrentContext().flatMap { _ in UIGraphicsGetImageFromCurrentImageContext()?.cgImage }
+        }
+
+        let isNonPencil = pts.allSatisfy { $0.pressure >= 0.999 }
+        ctx.setStrokeColor(color.cgColor)
+        var prevW: CGFloat = 0
+
+        for i in 1..<pts.count {
+            let a = pts[i-1], b = pts[i]
+            var w = VariableStrokeStyle.width(
+                pressure: (a.pressure + b.pressure) * 0.5,
+                speed: max(0.001, (a.speed + b.speed) * 0.5),
+                isNonPencil: isNonPencil,
+                speedSensitivity: speedSensitivity,
+                pressureSensitivity: pressureSensitivity,
+                sizeFactor: sizeFactor)
+            w = VariableStrokeStyle.smoothed(w, previous: prevW); prevW = w
+
+            let pa = mapPoint(a.location, canvasSize: canvasSize, bbox: bbox)
+            let pb = mapPoint(b.location, canvasSize: canvasSize, bbox: bbox)
+            ctx.setLineWidth(w)
+            ctx.move(to: pa); ctx.addLine(to: pb)
+            ctx.strokePath()
+        }
+        return UIGraphicsGetImageFromCurrentImageContext()?.cgImage
+    }
+
+    /// Renders an SVG filled outline as a CGImage.
+    private func renderSVGOutline(_ svgPath: String, canvasSize: CGFloat) -> CGImage? {
+        let size = CGSize(width: canvasSize, height: canvasSize)
+        UIGraphicsBeginImageContextWithOptions(size, false, UIScreen.main.scale)
+        defer { UIGraphicsEndImageContext() }
+        guard let ctx = UIGraphicsGetCurrentContext() else { return nil }
+        let path = SVGParser.bezierPath(from: svgPath, canvasSize: canvasSize)
+        ctx.setFillColor(UIColor.black.cgColor)
+        ctx.addPath(path.cgPath)
+        ctx.fillPath()
+        return UIGraphicsGetImageFromCurrentImageContext()?.cgImage
+    }
+
+    // MARK: Geometry helpers
+
+    private func mapPoint(_ pt: CGPoint, canvasSize: CGFloat, bbox: CGRect?) -> CGPoint {
+        guard let bb = bbox, bb.width > 0, bb.height > 0 else {
+            return CGPoint(x: pt.x * canvasSize, y: pt.y * canvasSize)
+        }
+        return CGPoint(
+            x: (pt.x - bb.minX) / bb.width  * canvasSize,
+            y: (pt.y - bb.minY) / bb.height * canvasSize
         )
     }
 
-    // MARK: - Setup UI Components
-    
-    private var emptyStateView: some View {
-        VStack(spacing: 12) {
-            Image(systemName: "tray")
-                .font(.system(size: 48))
-                .foregroundColor(Color("Neutral 700"))
-            Text("No sets with definitions")
-                .font(.headline)
-                .foregroundColor(Color("Blue 900"))
-            Text("Add definitions to a learning set to practice flashcards")
-                .font(.subheadline)
-                .foregroundColor(Color("Neutral 700"))
-                .multilineTextAlignment(.center)
-        }
-        .frame(maxWidth: .infinity)
-        .padding(.vertical, 30)
+    private func userMedianPath(_ stroke: Stroke, canvasSize: CGFloat, bbox: CGRect?) -> UIBezierPath {
+        let pts = stroke.displayPoints.map { $0.location }
+        let path = UIBezierPath()
+        guard !pts.isEmpty else { return path }
+        let mapped = pts.map { mapPoint($0, canvasSize: canvasSize, bbox: bbox) }
+        path.move(to: mapped[0])
+        mapped.dropFirst().forEach { path.addLine(to: $0) }
+        return path
     }
-    
-    private var pickerSection: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("Learning Set")
-                .font(.subheadline)
-                .foregroundColor(Color("Blue 900"))
-            
-            Picker("Learning Set", selection: learningSetSelection) {
-                ForEach(setsWithDefinitions) { set in
-                    Text(set.name).tag(Optional(set.id))
+
+    private func medianPath(_ points: [CGPoint], canvasSize: CGFloat) -> UIBezierPath {
+        let path = UIBezierPath()
+        guard !points.isEmpty else { return path }
+        let scaled = points.map { SVGParser.scaleWithInset($0, canvasSize: canvasSize) }
+        path.move(to: scaled[0])
+        scaled.dropFirst().forEach { path.addLine(to: $0) }
+        return path
+    }
+
+    private func userMaskWidth(canvasSize: CGFloat, bbox: CGRect?, sizeFactor: Double) -> CGFloat {
+        let maxUserW: CGFloat = 28.0 * CGFloat(sizeFactor)
+        if let bb = bbox, bb.width > 0, bb.height > 0 {
+            let scale = canvasSize / max(bb.width, bb.height)
+            return max(1, maxUserW * scale * 2.2)
+        }
+        return max(12, canvasSize * 0.08)
+    }
+
+    private func referenceMaskWidth(ref: ReferenceStroke, canvasSize: CGFloat) -> CGFloat {
+        let outline  = SVGParser.bezierPath(from: ref.svgPath, canvasSize: canvasSize).bounds
+        let medianPt = medianPath(ref.medianPoints, canvasSize: canvasSize).bounds
+        let estimated = max(outline.width - medianPt.width, outline.height - medianPt.height)
+        let fallback  = max(canvasSize * 0.10, max(outline.width, outline.height) * 0.5)
+        return max(estimated * 1.5, fallback)
+    }
+
+    private func strokeColor(refIdx: Int, userIdx: Int,
+                              results: [StrokeAnalysisResult]) -> UIColor {
+        guard userIdx < results.count,
+              let matched = results[userIdx].bestMatchIndex else { return .systemRed }
+        return matched == refIdx ? .systemGreen : .systemYellow
+    }
+}
+
+// MARK: - SwiftUI wrapper for MaskRevealContainerView
+
+struct ReferenceStrokeMaskAnimationView: UIViewRepresentable {
+    let referenceStrokes:    [ReferenceStroke]
+    let userStrokes:         [Stroke]
+    let strokeResults:       [StrokeAnalysisResult]
+    let originalCanvasSize:  CGFloat
+    let boundingBox:         CGRect?
+    let canvasSize:          CGFloat
+    let totalDuration:       Double
+    let replayNonce:         Int
+    let pause:               Bool
+    let speedSensitivity:    Double
+    let pressureSensitivity: Double
+    let sizeFactor:          Double
+
+    func makeUIView(context: Context) -> MaskRevealContainerView {
+        let v = MaskRevealContainerView()
+        v.backgroundColor = .clear
+        return v
+    }
+
+    func updateUIView(_ uiView: MaskRevealContainerView, context: Context) {
+        uiView.configure(MaskRevealContainerView.Config(
+            referenceStrokes:    referenceStrokes,
+            userStrokes:         userStrokes,
+            strokeResults:       strokeResults,
+            originalCanvasSize:  originalCanvasSize,
+            boundingBox:         boundingBox,
+            canvasSize:          canvasSize,
+            totalDuration:       totalDuration,
+            replayNonce:         replayNonce,
+            pause:               pause,
+            speedSensitivity:    speedSensitivity,
+            pressureSensitivity: pressureSensitivity,
+            sizeFactor:          sizeFactor
+        ))
+    }
+}
+
+// MARK: - SVGMaskRevealAnimationView (reference-only, no user strokes)
+
+final class SVGRevealContainerView: UIView {
+    private var prevNonce = -1
+    private var maskLayers: [CAShapeLayer] = []
+
+    func renderAndAnimate(referenceStrokes: [ReferenceStroke], canvasSize: CGFloat,
+                          totalDuration: Double, replayNonce: Int) {
+        guard !referenceStrokes.isEmpty, replayNonce != prevNonce else { return }
+        prevNonce = replayNonce
+        layer.sublayers?.forEach { $0.removeFromSuperlayer() }
+        maskLayers.removeAll()
+
+        let per = totalDuration / Double(referenceStrokes.count)
+
+        for (idx, ref) in referenceStrokes.enumerated() {
+            let outlineLayer = CAShapeLayer()
+            outlineLayer.path      = SVGParser.bezierPath(from: ref.svgPath, canvasSize: canvasSize).cgPath
+            outlineLayer.fillColor = UIColor.black.cgColor
+
+            let mPath  = UIBezierPath()
+            let scaled = ref.medianPoints.map { SVGParser.scaleWithInset($0, canvasSize: canvasSize) }
+            if let first = scaled.first {
+                mPath.move(to: first)
+                scaled.dropFirst().forEach { mPath.addLine(to: $0) }
+            }
+            let maskLayer = CAShapeLayer()
+            maskLayer.path        = mPath.cgPath
+            maskLayer.strokeColor = UIColor.black.cgColor
+            maskLayer.fillColor   = UIColor.clear.cgColor
+            maskLayer.lineWidth   = max(canvasSize * 0.08, 12)
+            maskLayer.lineCap     = .round
+            maskLayer.strokeEnd   = 0
+            outlineLayer.mask     = maskLayer
+
+            layer.addSublayer(outlineLayer)
+            maskLayers.append(maskLayer)
+
+            let anim = CABasicAnimation(keyPath: "strokeEnd")
+            anim.fromValue = 0; anim.toValue = 1
+            anim.duration  = per
+            anim.beginTime = CACurrentMediaTime() + Double(idx) * per
+            anim.fillMode  = .forwards
+            anim.isRemovedOnCompletion = false
+            anim.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+            maskLayer.add(anim, forKey: "reveal")
+        }
+    }
+}
+
+struct SVGMaskRevealAnimationView: UIViewRepresentable {
+    let referenceStrokes: [ReferenceStroke]
+    let canvasSize:       CGFloat
+    let totalDuration:    Double
+    let replayNonce:      Int
+
+    func makeUIView(context: Context) -> SVGRevealContainerView {
+        let v = SVGRevealContainerView(); v.backgroundColor = .clear; return v
+    }
+    func updateUIView(_ v: SVGRevealContainerView, context: Context) {
+        v.renderAndAnimate(referenceStrokes: referenceStrokes, canvasSize: canvasSize,
+                           totalDuration: totalDuration, replayNonce: replayNonce)
+    }
+}
+
+// MARK: - UserStrokesMaskRevealAnimationView
+
+final class UserRevealContainerView: UIView {
+    private var prevNonce = -1
+
+    func renderAndAnimate(strokes: [Stroke], canvasSize: CGFloat, sourceCanvasSize: CGFloat,
+                          totalDuration: Double, replayNonce: Int,
+                          speedSensitivity: Double, pressureSensitivity: Double, sizeFactor: Double) {
+        guard !strokes.isEmpty, replayNonce != prevNonce else { return }
+        prevNonce = replayNonce
+        layer.sublayers?.forEach { $0.removeFromSuperlayer() }
+
+        let per   = totalDuration / Double(strokes.count)
+        let scale = canvasSize / max(1, sourceCanvasSize)
+
+        for (idx, stroke) in strokes.enumerated() {
+            let pts = stroke.displayPoints
+            guard pts.count >= 2 else { continue }
+
+            // Render stroke as a CGImage
+            let size = CGSize(width: canvasSize, height: canvasSize)
+            UIGraphicsBeginImageContextWithOptions(size, false, UIScreen.main.scale)
+            if let ctx = UIGraphicsGetCurrentContext() {
+                ctx.setLineCap(.round); ctx.setLineJoin(.round)
+                let isNonPencil = pts.allSatisfy { $0.pressure >= 0.999 }
+                ctx.setStrokeColor(UIColor.black.cgColor)
+                var prevW: CGFloat = 0
+                for i in 1..<pts.count {
+                    let a = pts[i-1], b = pts[i]
+                    var w = VariableStrokeStyle.width(
+                        pressure: (a.pressure + b.pressure) * 0.5,
+                        speed: max(0.001, (a.speed + b.speed) * 0.5),
+                        isNonPencil: isNonPencil,
+                        speedSensitivity: speedSensitivity,
+                        pressureSensitivity: pressureSensitivity,
+                        sizeFactor: sizeFactor)
+                    w = VariableStrokeStyle.smoothed(w, previous: prevW) * scale
+                    prevW = w
+                    ctx.setLineWidth(w)
+                    ctx.move(to: CGPoint(x: a.location.x * scale, y: a.location.y * scale))
+                    ctx.addLine(to: CGPoint(x: b.location.x * scale, y: b.location.y * scale))
+                    ctx.strokePath()
                 }
             }
-            .pickerStyle(.menu)
-            .padding(12)
-            .background(Color.white.opacity(0.9))
-            .cornerRadius(8)
-            
-            if let set = selectedSet {
-                Text("\(flashcardItems.count) flashcards")
-                    .font(.caption)
-                    .foregroundColor(Color("Neutral 700"))
-            }
+            let image = UIGraphicsGetImageFromCurrentImageContext()?.cgImage
+            UIGraphicsEndImageContext()
+
+            let outlineLayer = CALayer()
+            outlineLayer.frame    = CGRect(origin: .zero, size: size)
+            outlineLayer.contents = image
+            outlineLayer.contentsScale = UIScreen.main.scale
+
+            let medianPath = UIBezierPath()
+            let mpts = pts.map { CGPoint(x: $0.location.x * scale, y: $0.location.y * scale) }
+            medianPath.move(to: mpts[0])
+            mpts.dropFirst().forEach { medianPath.addLine(to: $0) }
+
+            let maskLayer = CAShapeLayer()
+            maskLayer.path        = medianPath.cgPath
+            maskLayer.strokeColor = UIColor.black.cgColor
+            maskLayer.fillColor   = UIColor.clear.cgColor
+            maskLayer.lineWidth   = max(12, canvasSize * 0.08)
+            maskLayer.lineCap     = .round
+            maskLayer.strokeEnd   = 0
+            outlineLayer.mask     = maskLayer
+
+            layer.addSublayer(outlineLayer)
+
+            let anim = CABasicAnimation(keyPath: "strokeEnd")
+            anim.fromValue = 0; anim.toValue = 1
+            anim.duration  = per
+            anim.beginTime = CACurrentMediaTime() + Double(idx) * per
+            anim.fillMode  = .forwards
+            anim.isRemovedOnCompletion = false
+            maskLayer.add(anim, forKey: "reveal")
         }
     }
-    
-    private var crosshairOverlay: some View {
-        GeometryReader { geometry in
-            let w = geometry.size.width
-            let h = geometry.size.height
-            Path { path in
-                path.move(to: CGPoint(x: 0, y: h / 2))
-                path.addLine(to: CGPoint(x: w, y: h / 2))
-                path.move(to: CGPoint(x: w / 2, y: 0))
-                path.addLine(to: CGPoint(x: w / 2, y: h))
-            }
-            .stroke(Color("Blue 700").opacity(0.2), style: StrokeStyle(lineWidth: 1, dash: [5, 5]))
-        }
-        .allowsHitTesting(false)
+}
+
+struct UserStrokesMaskRevealAnimationView: UIViewRepresentable {
+    let strokes:             [Stroke]
+    let canvasSize:          CGFloat
+    let sourceCanvasSize:    CGFloat
+    let totalDuration:       Double
+    let replayNonce:         Int
+    let speedSensitivity:    Double
+    let pressureSensitivity: Double
+    let sizeFactor:          Double
+
+    func makeUIView(context: Context) -> UserRevealContainerView {
+        let v = UserRevealContainerView(); v.backgroundColor = .clear; return v
     }
-    
-    private var shuffleToggle: some View {
-        HStack {
-            Text("Shuffle cards")
-                .foregroundColor(Color("Blue 900"))
-            Spacer()
-            Toggle("", isOn: $shuffle)
-                .labelsHidden()
-        }
-        .padding(12)
-        .background(Color.white.opacity(0.7))
-        .cornerRadius(8)
+    func updateUIView(_ v: UserRevealContainerView, context: Context) {
+        v.renderAndAnimate(strokes: strokes, canvasSize: canvasSize,
+                           sourceCanvasSize: sourceCanvasSize, totalDuration: totalDuration,
+                           replayNonce: replayNonce,
+                           speedSensitivity: speedSensitivity,
+                           pressureSensitivity: pressureSensitivity,
+                           sizeFactor: sizeFactor)
     }
-    
-    private var startButton: some View {
-        Button(action: startSession) {
-            Text("Start Practice")
-                .font(.headline)
-                .foregroundColor(Color("Sand 100"))
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 14)
-                .background(Color("Blue 700"))
-                .cornerRadius(10)
-                .shadow(color: Color("Blue 700").opacity(0.3), radius: 8, x: 0, y: 4)
-        }
-        .disabled(selectedSet?.hasDefinitions != true)
-        .opacity(selectedSet?.hasDefinitions == true ? 1.0 : 0.6)
+}
+
+// MARK: - Safe collection subscript
+
+private extension Array {
+    subscript(safe index: Index) -> Element? {
+        indices.contains(index) ? self[index] : nil
     }
-    
-    private var setupContentView: some View {
+}
+
+// MARK: - FlashcardPracticeView
+
+struct FlashcardPracticeView: View {
+    @EnvironmentObject var store: LearningSetsStore
+    @EnvironmentObject var fsrsService: FSRSService
+    @StateObject private var viewModel = DrawingViewModel()
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+
+    // MARK: Setup state
+    @State private var selectedSetIds: Set<UUID> = []
+    @State private var shuffle = false
+    @State private var inSession = false
+    @State private var practiceMode: PracticeMode = .flip
+
+    // MARK: Flip-mode state
+    @State private var isFlipped = false
+    @State private var showDifficultyPanel = false
+    @State private var selectedDifficulty: DifficultyRating?
+
+    // MARK: Draw-mode state
+    @State private var activeCharacterBoxIndex = 0
+    @State private var userStrokesPerBox: [[Stroke]] = []
+    @State private var isDrawing = false
+    @State private var drawModeDifficulty: DifficultyRating?
+
+    // MARK: Session progress
+    @State private var reviewedCardIds: Set<UUID> = []
+    @State private var difficultyRatings: [UUID: DifficultyRating] = [:]
+    @State private var showEndPage = false
+    @State private var currentIndex = 0
+    @State private var currentPrompt = ""
+    @State private var currentCharacter = ""
+
+    // MARK: Feedback state
+    @State private var showFeedback = false
+    @State private var savedUserStrokes: [[Stroke]] = []
+    @State private var canvasSize: CGFloat = 400
+    @State private var drawingAreaSize: CGSize = .zero
+    @State private var replayNonce = 0
+
+    // MARK: UI overlays
+    @State private var showSettings = false
+    @State private var showHelpGuide = false
+
+    // MARK: Persisted settings
+    @AppStorage("boundingBoxSize")         private var boundingBoxSize:          Double = 0.5
+    @AppStorage("secondsPerStroke")        private var secondsPerStroke:         Double = 1.0
+    @AppStorage("enableStrokeRemoval")     private var enableStrokeRemoval:      Bool   = false
+    @AppStorage("strokeSpeedSensitivity")  private var strokeSpeedSensitivity:   Double = 1.5
+    @AppStorage("strokePressureSensitivity") private var strokePressureSensitivity: Double = 1.5
+    @AppStorage("strokeSizeFactor")        private var strokeSizeFactor:         Double = 1.0
+
+    // MARK: Derived
+
+    private var selectedSets: [LearningSet] {
+        guard !selectedSetIds.isEmpty else {
+            return store.activeSet.map { [$0] } ?? []
+        }
+        return store.sets.filter { selectedSetIds.contains($0.id) }
+    }
+
+    private var flashcardItems: [FlashcardItem] {
+        selectedSets.flatMap { $0.items ?? [] }
+    }
+
+    private var isCurrentSessionComplete: Bool { reviewedCardIds.count >= flashcardItems.count }
+
+    private var setsWithDefinitions: [LearningSet] { store.sets.filter { $0.hasDefinitions } }
+    private var allSetsSelected: Bool {
+        !setsWithDefinitions.isEmpty && selectedSetIds.count == setsWithDefinitions.count
+    }
+
+    private var currentCharacters: [String] {
+        Array(currentCharacter.unicodeScalars).map { String($0) }
+    }
+
+    // MARK: Body
+
+    var body: some View {
         Group {
+            if inSession {
+                if showEndPage {
+                    endPageView
+                } else {
+                    inSessionUI
+                }
+            } else {
+                setupUI
+            }
+        }
+        .sheet(isPresented: $showSettings) { settingsSheet }
+        .sheet(isPresented: $showHelpGuide) { NavigationStack { helpGuideView } }
+    }
+
+    // MARK: - Setup UI
+
+    private var setupUI: some View {
+        ZStack {
+            Color("Secondary100").ignoresSafeArea()
+            ScrollView {
+                VStack(spacing: 24) {
+                    Text("Flashcard Practice")
+                        .font(.system(size: horizontalSizeClass == .compact ? 28 : 40, weight: .bold))
+                        .foregroundColor(Color("Primary900"))
+                        .padding(.top, horizontalSizeClass == .compact ? 8 : 20)
+
+                    setupCard
+                    Spacer(minLength: 40)
+                }
+            }
+        }
+        .navigationBarTitleDisplayMode(.inline)
+    }
+
+    private var setupCard: some View {
+        VStack(alignment: .leading, spacing: 20) {
+            Text("Setup")
+                .font(.title2).bold()
+                .foregroundColor(Color("Primary900"))
+
             if setsWithDefinitions.isEmpty {
                 emptyStateView
             } else {
                 VStack(alignment: .leading, spacing: 12) {
                     pickerSection
-                    shuffleToggle
+                    modeSelector
+                    orderOptionsSection
                     startButton
                 }
             }
-        }
-    }
-    
-    private var setupCard: some View {
-        VStack(alignment: .leading, spacing: 20) {
-            Text("Setup")
-                .font(.title2).bold()
-                .foregroundColor(Color("Blue 900"))
-            
-            setupContentView
         }
         .padding(20)
         .background(Color.white.opacity(0.7))
@@ -274,1123 +943,849 @@ struct FlashcardPracticeView: View {
         .shadow(color: Color.black.opacity(0.1), radius: 10, x: 0, y: 4)
         .padding(.horizontal, 24)
     }
-    
-    private var setupUI: some View {
+
+    private var emptyStateView: some View {
+        VStack(spacing: 12) {
+            Image(systemName: "tray")
+                .font(.system(size: 48))
+                .foregroundColor(Color("Neutral700"))
+            Text("No sets with definitions")
+                .font(.headline).foregroundColor(Color("Primary900"))
+            Text("Add definitions to a learning set to practice flashcards")
+                .font(.subheadline).foregroundColor(Color("Neutral700"))
+                .multilineTextAlignment(.center)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 30)
+    }
+
+    private var pickerSection: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Text("Learning Sets").font(.subheadline).foregroundColor(Color("Primary900"))
+                Spacer()
+                Button(allSetsSelected ? "Deselect All" : "Select All") {
+                    selectedSetIds = allSetsSelected
+                        ? []
+                        : Set(setsWithDefinitions.map { $0.id })
+                }
+                .font(.caption).foregroundColor(Color("Primary700"))
+            }
+
+            ForEach(setsWithDefinitions) { set in
+                setPickerRow(set)
+            }
+
+            if !selectedSetIds.isEmpty {
+                Text("\(selectedSetIds.count) set(s) selected • \(flashcardItems.count) total cards")
+                    .font(.caption).foregroundColor(Color("Neutral700"))
+                    .padding(.top, 4)
+            }
+        }
+    }
+
+    private func setPickerRow(_ set: LearningSet) -> some View {
+        let selected = selectedSetIds.contains(set.id)
+        return Button {
+            if selected { selectedSetIds.remove(set.id) } else { selectedSetIds.insert(set.id) }
+        } label: {
+            HStack(spacing: 12) {
+                Image(systemName: selected ? "checkmark.square.fill" : "square")
+                    .font(.title3)
+                    .foregroundColor(selected ? Color("Primary700") : Color("Neutral400"))
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(set.name).font(.subheadline).foregroundColor(Color("Primary900"))
+                    if let items = set.items {
+                        Text("\(items.count) cards").font(.caption).foregroundColor(Color("Neutral700"))
+                    }
+                }
+                Spacer()
+            }
+            .padding(12)
+            .background(selected ? Color("Primary700").opacity(0.1) : Color.white.opacity(0.9))
+            .cornerRadius(8)
+        }
+        .buttonStyle(.plain)
+    }
+
+    private var modeSelector: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Practice Mode").font(.subheadline).foregroundColor(Color("Primary900"))
+            Picker("Mode", selection: $practiceMode) {
+                ForEach(PracticeMode.allCases, id: \.self) { Text($0.rawValue).tag($0) }
+            }
+            .pickerStyle(.segmented)
+        }
+    }
+
+    private var orderOptionsSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Card Order").font(.subheadline).foregroundColor(Color("Primary900"))
+            HStack {
+                Text("Shuffle cards").font(.subheadline).foregroundColor(Color("Primary900"))
+                Spacer()
+                Toggle("", isOn: $shuffle).labelsHidden()
+            }
+            .padding(12)
+            .background(Color.white.opacity(0.7))
+            .cornerRadius(8)
+        }
+    }
+
+    private var startButton: some View {
+        Button(action: startSession) {
+            Text("Start Practice")
+                .font(.headline)
+                .foregroundColor(Color("Secondary100"))
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 14)
+                .background(Color("Primary700"))
+                .cornerRadius(10)
+                .shadow(color: Color("Primary700").opacity(0.3), radius: 8, x: 0, y: 4)
+        }
+        .disabled(selectedSetIds.isEmpty)
+        .opacity(selectedSetIds.isEmpty ? 0.6 : 1.0)
+    }
+
+    // MARK: - In-Session UI
+
+    private var inSessionUI: some View {
+        VStack(spacing: 0) {
+            sessionHeader
+            progressBar
+            drawingOrFeedbackArea
+            bottomActionBar
+        }
+    }
+
+    private var sessionHeader: some View {
+        Group {
+            if horizontalSizeClass == .compact {
+                compactHeader
+            } else {
+                regularHeader
+            }
+        }
+    }
+
+    private var compactHeader: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 12) {
+                settingsHelpButtons(size: 34)
+                Spacer()
+            }
+            Text(currentPrompt)
+                .font(.system(size: 22, weight: .semibold))
+                .foregroundColor(Color("Primary900"))
+                .multilineTextAlignment(.center)
+                .lineLimit(6).minimumScaleFactor(0.6)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .center)
+                .padding(.horizontal, 8)
+        }
+        .padding(.horizontal, 16).padding(.vertical, 12)
+        .background(Color("Secondary100").opacity(0.3))
+    }
+
+    private var regularHeader: some View {
+        HStack(spacing: 16) {
+            settingsHelpButtons(size: 44)
+            Spacer()
+            Text(currentPrompt)
+                .font(.system(size: 24, weight: .medium))
+                .foregroundColor(Color("Primary900"))
+                .multilineTextAlignment(.center)
+                .lineLimit(3).minimumScaleFactor(0.7)
+                .padding(.horizontal, 16)
+            Spacer()
+            // Symmetry spacers
+            Color.clear.frame(width: 44, height: 44)
+            Color.clear.frame(width: 44, height: 44)
+        }
+        .padding(.horizontal, 24).padding(.vertical, 16)
+        .background(Color("Secondary100").opacity(0.3))
+    }
+
+    @ViewBuilder
+    private func settingsHelpButtons(size: CGFloat) -> some View {
+        iconButton("slider.horizontal.3", size: size,
+                   color: Color("Primary700"),
+                   background: showSettings ? Color("Primary700").opacity(0.2) : Color.white) {
+            withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) { showSettings.toggle() }
+        }
+        iconButton("questionmark.circle", size: size, color: Color("Primary700")) {
+            showHelpGuide = true
+        }
+    }
+
+    private func iconButton(
+        _ icon: String, size: CGFloat, color: Color,
+        background: Color = Color.white,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            Image(systemName: icon)
+                .font(size == 34 ? .callout : .title3)
+                .foregroundColor(color)
+                .frame(width: size, height: size)
+                .background(background)
+                .clipShape(Circle())
+                .shadow(color: Color.black.opacity(0.1), radius: 4, x: 0, y: 2)
+        }
+    }
+
+    private var progressBar: some View {
+        HStack(spacing: 12) {
+            HStack(spacing: 6) {
+                Image(systemName: "checkmark.circle.fill").foregroundColor(.green)
+                Text("\(reviewedCardIds.count) completed").font(.caption)
+            }
+            Spacer()
+            HStack(spacing: 6) {
+                Image(systemName: "doc.text").foregroundColor(Color("Primary700"))
+                Text("\(flashcardItems.count) total").font(.caption)
+            }
+        }
+        .foregroundColor(Color("Primary900"))
+        .padding(.horizontal, 24).padding(.vertical, 6)
+        .background(Color.white.opacity(0.7))
+    }
+
+    // MARK: Drawing / feedback canvas area
+
+    @ViewBuilder
+    private var drawingOrFeedbackArea: some View {
+        if practiceMode == .flip {
+            flipCardArea
+        } else {
+            if showFeedback {
+                feedbackArea
+            } else {
+                drawingArea
+                    .id(currentIndex) // force canvas recreation on card change
+            }
+        }
+    }
+
+    // MARK: Flip Card Mode
+
+    private var flipCardArea: some View {
+        GeometryReader { geo in
+            ZStack {
+                Color.white
+                
+                VStack(spacing: 0) {
+                    Spacer(minLength: 20)
+                    
+                    // Flip card container
+                    flipCardView
+                        .frame(maxWidth: min(geo.size.width - 48, 500))
+                        .frame(height: min(geo.size.height * 0.6, 400))
+                    
+                    Spacer(minLength: 20)
+                    
+                    // Difficulty rating panel (shown after flipping)
+                    if isFlipped && !showDifficultyPanel {
+                        Button(action: { withAnimation { showDifficultyPanel = true } }) {
+                            Text("Rate Difficulty")
+                                .font(.headline)
+                                .foregroundColor(.white)
+                                .frame(maxWidth: .infinity)
+                                .padding(.vertical, 16)
+                                .background(Color("Primary700"))
+                                .cornerRadius(12)
+                        }
+                        .padding(.horizontal, 24)
+                        .transition(.move(edge: .bottom).combined(with: .opacity))
+                    }
+                    
+                    if showDifficultyPanel {
+                        difficultyRatingPanel
+                            .transition(.move(edge: .bottom).combined(with: .opacity))
+                    }
+                    
+                    Spacer(minLength: 20)
+                }
+            }
+        }
+    }
+
+    private var flipCardView: some View {
         ZStack {
-            Color(red: 0.68, green: 0.85, blue: 0.9)
-                .ignoresSafeArea()
+            // Back side (Character)
+            cardSide(
+                content: currentCharacter,
+                backgroundColor: Color("Primary700"),
+                textColor: .white,
+                fontSize: 120,
+                isVisible: isFlipped
+            )
+            .rotation3DEffect(
+                .degrees(isFlipped ? 0 : 180),
+                axis: (x: 0, y: 1, z: 0)
+            )
             
+            // Front side (Definition)
+            cardSide(
+                content: currentPrompt,
+                backgroundColor: .white,
+                textColor: Color("Primary900"),
+                fontSize: 24,
+                isVisible: !isFlipped
+            )
+            .rotation3DEffect(
+                .degrees(isFlipped ? -180 : 0),
+                axis: (x: 0, y: 1, z: 0)
+            )
+        }
+        .onTapGesture {
+            withAnimation(.spring(response: 0.6, dampingFraction: 0.8)) {
+                isFlipped.toggle()
+            }
+        }
+    }
+
+    private func cardSide(content: String, backgroundColor: Color, textColor: Color, fontSize: CGFloat, isVisible: Bool) -> some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: 20)
+                .fill(backgroundColor)
+                .shadow(color: Color.black.opacity(0.15), radius: 15, x: 0, y: 8)
+            
+            VStack(spacing: 16) {
+                if !isVisible {
+                    Image(systemName: "arrow.triangle.2.circlepath")
+                        .font(.title2)
+                        .foregroundColor(textColor.opacity(0.5))
+                    Text("Tap to flip")
+                        .font(.caption)
+                        .foregroundColor(textColor.opacity(0.5))
+                }
+                
+                Text(content)
+                    .font(.system(size: fontSize, weight: .bold))
+                    .foregroundColor(textColor)
+                    .multilineTextAlignment(.center)
+                    .minimumScaleFactor(0.3)
+                    .lineLimit(fontSize > 50 ? 2 : 10)
+                    .padding(.horizontal, 32)
+            }
+        }
+        .opacity(isVisible ? 1 : 0)
+    }
+
+    private var difficultyRatingPanel: some View {
+        VStack(spacing: 16) {
+            Text("How difficult was this card?")
+                .font(.headline)
+                .foregroundColor(Color("Primary900"))
+            
+            VStack(spacing: 12) {
+                ForEach(DifficultyRating.allCases, id: \.self) { rating in
+                    Button(action: {
+                        selectedDifficulty = rating
+                        rateAndProceed(rating)
+                    }) {
+                        HStack {
+                            Image(systemName: rating.icon)
+                                .font(.title3)
+                            Text(rating.rawValue)
+                                .font(.body)
+                                .fontWeight(.medium)
+                            Spacer()
+                        }
+                        .foregroundColor(.white)
+                        .padding(.vertical, 14)
+                        .padding(.horizontal, 20)
+                        .background(rating.color)
+                        .cornerRadius(12)
+                    }
+                }
+            }
+        }
+        .padding(.horizontal, 24)
+    }
+
+    private var drawingArea: some View {
+        GeometryReader { geo in
+            ScrollView {
+                VStack(spacing: 16) {
+                    ForEach(currentCharacters.indices, id: \.self) { index in
+                        characterInputBox(for: index, containerWidth: geo.size.width)
+                    }
+                }
+                .frame(maxWidth: .infinity)
+                .padding(24)
+            }
+            .background(Color.white)
+        }
+    }
+
+    private func characterInputBox(for index: Int, containerWidth: CGFloat) -> some View {
+        let boxSize = min(containerWidth - 48, 350)
+        return VStack(spacing: 8) {
+            Text("Character \(index + 1)")
+                .font(.headline)
+                .foregroundColor(Color("Primary900"))
+            
+            ZStack {
+                Color.white
+                
+                // Crosshair guides
+                crosshairLines(size: boxSize)
+                
+                if index < userStrokesPerBox.count {
+                    ForEach(userStrokesPerBox[index], id: \.id) { stroke in
+                        strokeView(stroke, color: Color.black)
+                    }
+                }
+                
+                if index == activeCharacterBoxIndex, let live = viewModel.currentStroke {
+                    strokeView(live, color: Color.black.opacity(0.8))
+                }
+            }
+            .frame(width: boxSize, height: boxSize)
+            .cornerRadius(12)
+            .overlay(
+                RoundedRectangle(cornerRadius: 12)
+                    .stroke(index == activeCharacterBoxIndex ? Color("Primary700") : Color.gray.opacity(0.3), lineWidth: index == activeCharacterBoxIndex ? 3 : 1)
+            )
+            .contentShape(Rectangle())
+            .overlay(
+                GeometryReader { geo in
+                    TouchCaptureView(
+                        onBegan: { pt, p in
+                            activeCharacterBoxIndex = index
+                            ensureBoxExists(at: index)
+                            isDrawing = true
+                            viewModel.beginStrokeWithPressure(at: pt, pressure: p)
+                        },
+                        onMoved: { pt, p in
+                            if activeCharacterBoxIndex == index {
+                                if viewModel.currentStroke == nil {
+                                    viewModel.beginStrokeWithPressure(at: pt, pressure: p)
+                                } else {
+                                    viewModel.continueStrokeWithPressure(at: pt, pressure: p)
+                                }
+                            }
+                        },
+                        onEnded: {
+                            if activeCharacterBoxIndex == index {
+                                isDrawing = false
+                                if let completedStroke = viewModel.currentStroke {
+                                    userStrokesPerBox[index].append(completedStroke)
+                                }
+                                viewModel.endStroke()
+                            }
+                        },
+                        drawingBounds: CGRect(origin: .zero, size: geo.size)
+                    )
+                }
+            )
+            
+            Button(action: { clearBox(at: index) }) {
+                HStack {
+                    Image(systemName: "trash")
+                    Text("Clear")
+                }
+                .font(.caption)
+                .foregroundColor(.red)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 6)
+                .background(Color.red.opacity(0.1))
+                .cornerRadius(8)
+            }
+        }
+    }
+
+    private func ensureBoxExists(at index: Int) {
+        while userStrokesPerBox.count <= index {
+            userStrokesPerBox.append([])
+        }
+    }
+
+    private func clearBox(at index: Int) {
+        guard index < userStrokesPerBox.count else { return }
+        userStrokesPerBox[index].removeAll()
+    }
+
+    private var guideBoxOverlay: some View {
+        GeometryReader { geo in
+            let sq   = min(geo.size.width, geo.size.height)
+            let box  = sq * CGFloat(boundingBoxSize)
+            let ox   = (geo.size.width  - box) / 2
+            let oy   = (geo.size.height - box) / 2
+            ZStack {
+                RoundedRectangle(cornerRadius: 8)
+                    .stroke(Color("Primary700").opacity(0.5), lineWidth: 2)
+                crosshairLines(size: box)
+            }
+            .frame(width: box, height: box)
+            .position(x: ox + box/2, y: oy + box/2)
+        }
+        .allowsHitTesting(false)
+    }
+
+    private func crosshairLines(size: CGFloat) -> some View {
+        Path { p in
+            p.move(to: CGPoint(x: 0, y: size/2)); p.addLine(to: CGPoint(x: size, y: size/2))
+            p.move(to: CGPoint(x: size/2, y: 0)); p.addLine(to: CGPoint(x: size/2, y: size))
+        }
+        .stroke(Color("Primary700").opacity(0.2),
+                style: .init(lineWidth: 1, dash: [5, 5]))
+    }
+
+    private var crosshairOverlay: some View {
+        GeometryReader { geo in
+            crosshairLines(size: min(geo.size.width, geo.size.height))
+        }
+        .allowsHitTesting(false)
+    }
+
+    @ViewBuilder
+    private var feedbackArea: some View {
+        GeometryReader { geo in
             ScrollView {
                 VStack(spacing: 24) {
-                    Text("Flashcard Practice")
-                        .font(.system(size: horizontalSizeClass == .compact ? 28 : 40)).bold()
-                        .foregroundColor(Color("Blue 900"))
-                        .padding(.top, horizontalSizeClass == .compact ? 8 : 20)
-                    
-                    setupCard
-                    
-                    Spacer(minLength: 40)
+                    ForEach(currentCharacters.indices, id: \.self) { charIndex in
+                        characterFeedbackRow(for: charIndex, containerWidth: geo.size.width)
+                    }
                 }
+                .padding(24)
             }
+            .background(Color.white)
         }
-        .navigationBarTitleDisplayMode(.inline)
-    }
-    
-    // MARK: - In-Session UI
-    private var inSessionUI: some View {
-        VStack(spacing: 0) {                    
-                    // Top control bar
-                    if horizontalSizeClass == .compact {
-                        VStack(alignment: .leading, spacing: 8) {
-                            HStack(spacing: 12) {
-                                if !showFeedback {
-                                    Button(action: { _ = viewModel.undo() }) {
-                                        Image(systemName: "arrow.uturn.backward")
-                                            .font(.callout)
-                                            .foregroundColor(Color("Blue 700"))
-                                            .frame(width: 34, height: 34)
-                                            .background(Color.white)
-                                            .clipShape(Circle())
-                                            .shadow(color: Color.black.opacity(0.1), radius: 4, x: 0, y: 2)
-                                    }
-                                    
-                                    Button(action: { viewModel.clear() }) {
-                                        Image(systemName: "trash")
-                                            .font(.callout)
-                                            .foregroundColor(.red)
-                                            .frame(width: 34, height: 34)
-                                            .background(Color.white)
-                                            .clipShape(Circle())
-                                            .shadow(color: Color.black.opacity(0.1), radius: 4, x: 0, y: 2)
-                                    }
-                                }
-                                Button(action: { 
-                                    withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
-                                        showSettings.toggle()
-                                    }
-                                }) {
-                                    Image(systemName: "slider.horizontal.3")
-                                        .font(.callout)
-                                        .foregroundColor(Color("Blue 700"))
-                                        .frame(width: 34, height: 34)
-                                        .background(showSettings ? Color("Blue 700").opacity(0.2) : Color.white)
-                                        .clipShape(Circle())
-                                        .shadow(color: Color.black.opacity(0.1), radius: 4, x: 0, y: 2)
-                                }
-                                Button(action: { showHelpGuide = true }) {
-                                    Image(systemName: "questionmark.circle")
-                                        .font(.callout)
-                                        .foregroundColor(Color("Blue 700"))
-                                        .frame(width: 34, height: 34)
-                                        .background(Color.white)
-                                        .clipShape(Circle())
-                                        .shadow(color: Color.black.opacity(0.1), radius: 4, x: 0, y: 2)
-                                }
-                                Spacer()
-                            }
-                            Text(currentPrompt)
-                                .font(.system(size: 22, weight: .semibold))
-                                .foregroundColor(Color("Blue 900"))
-                                .multilineTextAlignment(.center)
-                                .lineLimit(6)
-                                .minimumScaleFactor(0.6)
-                                .fixedSize(horizontal: false, vertical: true)
-                                .frame(maxWidth: .infinity, alignment: .center)
-                                .padding(.horizontal, 8)
-                        }
-                        .padding(.horizontal, 16)
-                        .padding(.vertical, 12)
-                        .background(Color(red: 0.68, green: 0.85, blue: 0.9).opacity(0.3))
-                    } else {
-                        HStack(spacing: 16) {
-                            if !showFeedback {
-                                Button(action: { _ = viewModel.undo() }) {
-                                    Image(systemName: "arrow.uturn.backward")
-                                        .font(.title3)
-                                        .foregroundColor(Color("Blue 700"))
-                                        .frame(width: 44, height: 44)
-                                        .background(Color.white)
-                                        .clipShape(Circle())
-                                        .shadow(color: Color.black.opacity(0.1), radius: 4, x: 0, y: 2)
-                                }
-                                
-                                Button(action: { viewModel.clear() }) {
-                                    Image(systemName: "trash")
-                                        .font(.title3)
-                                        .foregroundColor(.red)
-                                        .frame(width: 44, height: 44)
-                                        .background(Color.white)
-                                        .clipShape(Circle())
-                                        .shadow(color: Color.black.opacity(0.1), radius: 4, x: 0, y: 2)
-                                }
-                            }
-                            Button(action: { 
-                                withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
-                                    showSettings.toggle()
-                                }
-                            }) {
-                                Image(systemName: "slider.horizontal.3")
-                                    .font(.title3)
-                                    .foregroundColor(Color("Blue 700"))
-                                    .frame(width: 44, height: 44)
-                                    .background(showSettings ? Color("Blue 700").opacity(0.2) : Color.white)
-                                    .clipShape(Circle())
-                                    .shadow(color: Color.black.opacity(0.1), radius: 4, x: 0, y: 2)
-                            }
-                            Button(action: { showHelpGuide = true }) {
-                                Image(systemName: "questionmark.circle")
-                                    .font(.title3)
-                                    .foregroundColor(Color("Blue 700"))
-                                    .frame(width: 44, height: 44)
-                                    .background(Color.white)
-                                    .clipShape(Circle())
-                                    .shadow(color: Color.black.opacity(0.1), radius: 4, x: 0, y: 2)
-                            }
-                            
-                            Spacer()
-                            
-                            // Definition prompt - centered
-                            VStack(spacing: 8) {
-                                Text(currentPrompt)
-                                    .font(.system(size: horizontalSizeClass == .compact ? 18 : 24, weight: .medium))
-                                    .foregroundColor(Color("Blue 900"))
-                                    .multilineTextAlignment(.center)
-                                    .lineLimit(horizontalSizeClass == .compact ? 4 : 3)
-                                    .minimumScaleFactor(0.7)
-                            }
-                            .padding(.horizontal, 16)
-                            
-                            Spacer()
-                            
-                            // Placeholder for symmetry
-                            Color.clear
-                                .frame(width: 44, height: 44)
-                            
-                            Color.clear
-                                .frame(width: 44, height: 44)
-                        }
-                        .padding(.horizontal, 24)
-                        .padding(.vertical, 16)
-                        .background(Color(red: 0.68, green: 0.85, blue: 0.9).opacity(0.3))
-                    }
-                    
-                    // Settings shown in a separate sheet now; no inline panel here
-                    HStack(spacing: 12) {
-                        let total = max(1, flashcardItems.count)
-                        ProgressView(value: Double(min(currentIndex, total)), total: Double(total))
-                            .accentColor(Color("Blue 700"))
-                        Text("\(min(currentIndex + 1, total))/\(total)")
-                            .font(.caption.monospacedDigit())
-                            .foregroundColor(Color("Blue 900"))
-                        Spacer()
-                        HStack(spacing: 6) {
-                            Image(systemName: "flame.fill")
-                                .foregroundColor(.orange)
-                            Text("\(perfectStreakCount)")
-                                .font(.caption.monospacedDigit())
-                                .foregroundColor(Color("Blue 900"))
-                        }
-                    }
-                    .padding(.horizontal, 24)
-                    .padding(.vertical, 6)
-                    .background(Color.white.opacity(0.7))
-                    // Drawing area for feedback
-                    if showFeedback {
-                        VStack(spacing: 0) {
-                            // Perfect Character Banner
-                            if isPerfectCharacter {
-                                perfectCharacterBanner
-                                    .transition(.move(edge: .top).combined(with: .opacity))
-                            }
-                            
-                            if horizontalSizeClass == .compact {
-                                ScrollView {
-                                    Group {
-                                        let tile = min(UIScreen.main.bounds.width - 48, 400)
-                                        VStack(spacing: 20) {
-                                            VStack(spacing: 8) {
-                                                Text("Your Drawing")
-                                                    .font(.headline)
-                                                    .foregroundColor(Color("Blue 900"))
-                                                
-                                                ZStack {
-                                                    Color.white
-                                                    
-                                                    crosshairOverlay
-                                                    
-                                                    coloredFeedbackCanvas
-                                                }
-                                                .frame(width: tile, height: tile)
-                                                .cornerRadius(12)
-                                                .overlay(
-                                                    RoundedRectangle(cornerRadius: 12)
-                                                        .stroke(Color("Blue 700"), lineWidth: 2)
-                                                )
-                                            }
-                                            
-                                            VStack(spacing: 8) {
-                                                Text("True Character")
-                                                    .font(.headline)
-                                                    .foregroundColor(Color("Blue 900"))
-                                                
-                                                ZStack {
-                                                    Color.white
-                                                    
-                                                    crosshairOverlay
-                                                    
-                                                    // Hybrid animation: user's correct strokes + reference for misses
-                                                    GeometryReader { geo in
-                                                        if let result = analysisResult {
-                                                            // Quantize size to reduce layout-churn replays on settings toggle
-                                                            let size = floor(min(geo.size.width, geo.size.height) / 8.0) * 8.0
-                                                            let duration = max(0.1, Double(result.referenceStrokes.count) * secondsPerStroke)
-                                                            ReferenceStrokeMaskAnimationView(
-                                                                referenceStrokes: result.referenceStrokes,
-                                                                userStrokes: result.userStrokes,
-                                                                strokeResults: result.strokeResults,
-                                                                originalCanvasSize: canvasSize,
-                                                                boundingBox: currentBoundingBox,
-                                                                canvasSize: size,
-                                                                totalDuration: duration,
-                                                                replayNonce: replayNonce,
-                                                                pause: showSettings,
-                                                                speedSensitivity: strokeSpeedSensitivity,
-                                                                pressureSensitivity: strokePressureSensitivity,
-                                                                sizeFactor: strokeSizeFactor
-                                                            )
-                                                            .id(replayNonce)
-                                                        }
-                                                    }
-                                                }
-                                                .frame(width: tile, height: tile)
-                                                .cornerRadius(12)
-                                                .overlay(alignment: .topTrailing) {
-                                                    Button(action: { replayNonce += 1 }) {
-                                                        Image(systemName: "arrow.clockwise")
-                                                            .foregroundColor(Color("Blue 700"))
-                                                            .padding(8)
-                                                            .background(Color.white.opacity(0.9))
-                                                            .clipShape(Circle())
-                                                            .shadow(color: Color.black.opacity(0.1), radius: 3, x: 0, y: 1)
-                                                    }
-                                                    .padding(6)
-                                                }
-                                                .overlay(
-                                                    RoundedRectangle(cornerRadius: 12)
-                                                        .stroke(Color("Blue 700"), lineWidth: 2)
-                                                )
-                                            }
-                                            
-                                            // Bottom panel: Reference Character
-                                            VStack(spacing: 8) {
-                                                Text("Reference Character")
-                                                    .font(.headline)
-                                                    .foregroundColor(Color("Blue 900"))
-                                                
-                                                ZStack {
-                                                    Color.white
-                                                    
-                                                    crosshairOverlay
-                                                    
-                                                    trueCharacterCanvas
-                                                }
-                                                .frame(width: tile, height: tile)
-                                                .cornerRadius(12)
-                                                .overlay(
-                                                    RoundedRectangle(cornerRadius: 12)
-                                                        .stroke(Color("Blue 700").opacity(0.3), lineWidth: 2)
-                                                )
-                                            }
-                                        }
-                                        .frame(maxWidth: .infinity)
-                                        .padding(.vertical, 12)
-                                    }
-                                }
-                                .padding(.horizontal, 16)
-                            } else {
-                                Spacer()
-                                
-                                // Side-by-side comparison view
-                                GeometryReader { outerGeo in
-                                    HStack(spacing: 16) {
-                                    // Left: User's color-coded strokes
-                                    VStack(spacing: 8) {
-                                        Text("Your Drawing")
-                                            .font(.headline)
-                                            .foregroundColor(Color("Blue 900"))
-                                        
-                                        ZStack {
-                                            Color.white
-                                            
-                                            crosshairOverlay
-                                            
-                                            coloredFeedbackCanvas
-                                        }
-                                        .aspectRatio(1.0, contentMode: .fit)
-                                        .cornerRadius(12)
-                                        .overlay(
-                                            RoundedRectangle(cornerRadius: 12)
-                                                .stroke(Color("Blue 700"), lineWidth: 2)
-                                        )
-                                    }
-                                    
-                                    // Right: Animated true character (mask-based reveal)
-                                    VStack(spacing: 8) {
-                                        Text("True Character")
-                                            .font(.headline)
-                                            .foregroundColor(Color("Blue 900"))
-                                        
-                                        ZStack {
-                                            Color.white
-                                            
-                                            crosshairOverlay
-                                            
-                                            // Hybrid animation: user's correct strokes + reference for misses
-                                            GeometryReader { geo in
-                                                if let result = analysisResult {
-                                                    // Quantize size to reduce layout-churn replays on settings toggle
-                                                    let size = floor(min(geo.size.width, geo.size.height) / 8.0) * 8.0
-                                                    let duration = max(0.1, Double(result.referenceStrokes.count) * secondsPerStroke)
-                                                    ReferenceStrokeMaskAnimationView(
-                                                        referenceStrokes: result.referenceStrokes,
-                                                        userStrokes: result.userStrokes,
-                                                        strokeResults: result.strokeResults,
-                                                        originalCanvasSize: canvasSize,
-                                                        boundingBox: currentBoundingBox,
-                                                        canvasSize: size,
-                                                        totalDuration: duration,
-                                                        replayNonce: replayNonce,
-                                                        pause: showSettings,
-                                                        speedSensitivity: strokeSpeedSensitivity,
-                                                        pressureSensitivity: strokePressureSensitivity,
-                                                        sizeFactor: strokeSizeFactor
-                                                    )
-                                                    .id(replayNonce)
-                                                }
-                                            }
-                                        }
-                                        .aspectRatio(1.0, contentMode: .fit)
-                                        .cornerRadius(12)
-                                        .overlay(alignment: .topTrailing) {
-                                            Button(action: { replayNonce += 1 }) {
-                                                Image(systemName: "arrow.clockwise")
-                                                    .foregroundColor(Color("Blue 700"))
-                                                    .padding(8)
-                                                    .background(Color.white.opacity(0.9))
-                                                    .clipShape(Circle())
-                                                    .shadow(color: Color.black.opacity(0.1), radius: 3, x: 0, y: 1)
-                                            }
-                                            .padding(6)
-                                        }
-                                        .overlay(
-                                            RoundedRectangle(cornerRadius: 12)
-                                                .stroke(Color("Blue 700"), lineWidth: 2)
-                                        )
-                                    }
-                                    }
-                                    .padding(.horizontal, outerGeo.size.width * 0.05)
-                                    .padding(.top, 150)
-                                }
-                                
-                                Spacer()
-                                
-                                // Bottom panel: Reference Character
-                                VStack(spacing: 8) {
-                                    Text("Reference Character")
-                                        .font(.headline)
-                                        .foregroundColor(Color("Blue 900"))
-                                    
-                                    ZStack {
-                                        Color.white
-                                        
-                                        crosshairOverlay
-                                        
-                                        trueCharacterCanvas
-                                    }
-                                    .frame(width: 150, height: 150)
-                                    .cornerRadius(12)
-                                    .overlay(
-                                        RoundedRectangle(cornerRadius: 12)
-                                            .stroke(Color("Blue 700").opacity(0.3), lineWidth: 2)
-                                    )
-                                }
-                                .padding(.top, 16)
-                                
-                                Spacer()
-                            }
-                        }
-                    } else {
-                        // Single drawing area when not in feedback mode
-                        ZStack {
-                            Color.white
-                            
-                            // Guide box with subtle grid (adjustable size)
-                            GeometryReader { geometry in
-                                let canvasSize: CGFloat = min(geometry.size.width, geometry.size.height)
-                                let boxSize: CGFloat = canvasSize * CGFloat(boundingBoxSize)
-                                let centerX = geometry.size.width / 2
-                                let centerY = geometry.size.height / 2
-                                
-                                ZStack {
-                                    // Outer box
-                                    RoundedRectangle(cornerRadius: 8)
-                                        .stroke(Color("Blue 700").opacity(0.5), lineWidth: 2)
-                                    
-                                    // Center cross guides
-                                    Path { path in
-                                        path.move(to: CGPoint(x: 0, y: boxSize / 2))
-                                        path.addLine(to: CGPoint(x: boxSize, y: boxSize / 2))
-                                        path.move(to: CGPoint(x: boxSize / 2, y: 0))
-                                        path.addLine(to: CGPoint(x: boxSize / 2, y: boxSize))
-                                    }
-                                    .stroke(Color("Blue 700").opacity(0.2), style: StrokeStyle(lineWidth: 1, dash: [5, 5]))
-                                }
-                                .frame(width: boxSize, height: boxSize)
-                                .position(x: centerX, y: centerY)
-                            }
-                            
-                            drawingCanvas
-                        }
-                    }
-                    
-                    // Bottom action bar and feedback
-                    VStack(spacing: 0) {
-                        // Feedback display
-                        if showFeedback {
-                            VStack(spacing: 12) {
-                                // Color Legend
-                                HStack(spacing: 16) {
-                                    HStack(spacing: 4) {
-                                        Circle()
-                                            .fill(Color.green)
-                                            .frame(width: 12, height: 12)
-                                        Text("Correct")
-                                            .font(.caption)
-                                            .foregroundColor(Color("Blue 900"))
-                                    }
-                                    
-                                    HStack(spacing: 4) {
-                                        Circle()
-                                            .fill(Color.yellow)
-                                            .frame(width: 12, height: 12)
-                                        Text("Wrong Order")
-                                            .font(.caption)
-                                            .foregroundColor(Color("Blue 900"))
-                                    }
-                                    
-                                    HStack(spacing: 4) {
-                                        Circle()
-                                            .fill(Color.red)
-                                            .frame(width: 12, height: 12)
-                                        Text("Incorrect")
-                                            .font(.caption)
-                                            .foregroundColor(Color("Blue 900"))
-                                    }
-                                }
-                                .padding(.vertical, 8)
-                                .padding(.horizontal, 16)
-                                .background(Color.white.opacity(0.7))
-                                .cornerRadius(8)
-                            }
-                            .padding(16)
-                            .background(Color.white.opacity(0.9))
-                            .cornerRadius(12)
-                            .padding(.horizontal, 24)
-                            .padding(.top, 12)
-                        }
-                        
-                        HStack(spacing: 12) {
-                            // Back / Retry button
-                            Button(action: {
-                                if showFeedback {
-                                    // If last attempt was not perfect, restore previous streak
-                                    if !isPerfectCharacter {
-                                        perfectStreakCount = prevStreakBeforeFinish
-                                    }
-                                    // Exit feedback to drawing mode for current character
-                                    showFeedback = false
-                                    analysisResult = nil
-                                    isPerfectCharacter = false
-                                    currentBoundingBox = nil
-                                    viewModel.clear()
-                                } else {
-                                    previousCard()
-                                }
-                            }) {
-                                HStack {
-                                    Image(systemName: "arrow.left")
-                                    Text(showFeedback ? "Back to Draw" : "Back")
-                                }
-                                .font(.headline)
-                                .foregroundColor(Color("Blue 700"))
-                                .frame(maxWidth: .infinity)
-                                .padding(.vertical, 16)
-                                .background(Color.white)
-                                .cornerRadius(12)
-                                .overlay(
-                                    RoundedRectangle(cornerRadius: 12)
-                                        .stroke(Color("Blue 700"), lineWidth: 2)
-                                )
-                                .shadow(color: Color.black.opacity(0.1), radius: 4, x: 0, y: 2)
-                            }
-                            .disabled(!showFeedback && !shuffle && currentIndex == 0)
-                            .opacity(!showFeedback && !shuffle && currentIndex == 0 ? 0.5 : 1.0)
-                            
-                            Button(action: finishCharacter) {
-                                HStack {
-                                    Image(systemName: "checkmark.circle.fill")
-                                    Text("Check")
-                                }
-                                .font(.headline)
-                                .foregroundColor(Color("Sand 100"))
-                                .frame(maxWidth: .infinity)
-                                .padding(.vertical, 16)
-                                .background(Color("Blue 700"))
-                                .cornerRadius(12)
-                                .shadow(color: Color("Blue 700").opacity(0.3), radius: 8, x: 0, y: 4)
-                            }
-                            .disabled(showFeedback)
-                            .opacity(showFeedback ? 0.5 : 1.0)
-                            
-                            Button(action: nextCard) {
-                                HStack {
-                                    Text("Next")
-                                    Image(systemName: "arrow.right")
-                                }
-                                .font(.headline)
-                                .foregroundColor(Color("Blue 700"))
-                                .frame(maxWidth: .infinity)
-                                .padding(.vertical, 16)
-                                .background(Color.white)
-                                .cornerRadius(12)
-                                .overlay(
-                                    RoundedRectangle(cornerRadius: 12)
-                                        .stroke(Color("Blue 700"), lineWidth: 2)
-                                )
-                                .shadow(color: Color.black.opacity(0.1), radius: 4, x: 0, y: 2)
-                            }
-                        }
-                        .padding(.horizontal, 24)
-                        .padding(.vertical, 16)
-                        .background(Color(red: 0.68, green: 0.85, blue: 0.9).opacity(0.3))
-                    }
-                }
-                .overlay( Group { if showCongrats { congratulationsOverlay } })
     }
 
-    var body: some View {
-        content
-            .onAppear {
-                if selectedSetId == nil { selectedSetId = store.activeSetId }
-                if !inSession && !flashcardItems.isEmpty {
-                    prepareInitialPrompt()
-                }
-            }
-            .sheet(isPresented: $showSettings) { settingsSheet }
-            .onChange(of: showSettings) { opened in
-                if opened {
-                    // Snapshot inputs while entering settings
-                    snapshotUserStrokes = analysisResult?.userStrokes ?? viewModel.currentCharacter.strokes
-                    snapshotBoundingBox = currentBoundingBox
-                } else {
-                    // Apply updated settings when the sheet is dismissed
-                    guard showFeedback, !currentCharacter.isEmpty else { return }
-                    let userStrokes = snapshotUserStrokes.isEmpty ? (analysisResult?.userStrokes ?? viewModel.currentCharacter.strokes) : snapshotUserStrokes
-                    let bbox = snapshotBoundingBox ?? currentBoundingBox
-                    analysisResult = StrokeAnalyzer.analyzeCharacter(
-                        userStrokes: userStrokes,
-                        character: currentCharacter,
-                        boundingBox: bbox,
-                        errorThreshold: enableStrokeRemoval ? 0.4 : Double.infinity
-                    )
-                    currentBoundingBox = bbox
-                    checkIfPerfect()
-                    // Rebuild once to ensure the hybrid uses updated matches
-                    replayNonce += 1
-                }
-            }
-            .sheet(isPresented: $showHelpGuide) {
-                NavigationStack {
-                    helpGuideView
-                        .toolbar {
-                            ToolbarItem(placement: .confirmationAction) {
-                                Button("Done") { showHelpGuide = false }
-                            }
+    private var drawModeDifficultyPanel: some View {
+        VStack(spacing: 16) {
+            Text("How difficult was this card?")
+                .font(.title3)
+                .fontWeight(.semibold)
+                .foregroundColor(Color("Primary900"))
+            
+            HStack(spacing: 12) {
+                ForEach(DifficultyRating.allCases, id: \.self) { rating in
+                    Button(action: {
+                        drawModeDifficulty = rating
+                        let currentCard = flashcardItems[currentIndex]
+                        difficultyRatings[currentCard.id] = rating
+                    }) {
+                        VStack(spacing: 8) {
+                            Image(systemName: rating.icon)
+                                .font(.title2)
+                            Text(rating.rawValue)
+                                .font(.caption)
+                                .fontWeight(.medium)
                         }
+                        .foregroundColor(.white)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 16)
+                        .background(rating.color)
+                        .cornerRadius(12)
+                    }
                 }
             }
-    }
-    
-    @ViewBuilder
-    private var content: some View {
-        if !inSession {
-            setupUI
-        } else {
-            inSessionUI
         }
+        .padding(20)
+        .background(Color.white)
+        .cornerRadius(16)
+        .shadow(color: Color.black.opacity(0.1), radius: 8, x: 0, y: 4)
     }
-    
-    
 
-    //Canvas and corresponding drawing
-    private var drawingCanvas: some View {
-        GeometryReader { geometry in
-            // Capture canvas size for bounding box calculation
-            Color.clear
-                .onAppear {
-                    let size = min(geometry.size.width, geometry.size.height)
-                    if size > 0 {
-                        canvasSize = size
-                    }
-                    drawingAreaSize = geometry.size
-                }
-                .onChange(of: geometry.size) { newSize in
-                    let size = min(newSize.width, newSize.height)
-                    if size > 0 {
-                        canvasSize = size
-                    }
-                    drawingAreaSize = newSize
-                }
-            
-            // Calculate the bounding box for clipping
-            let fullW = geometry.size.width
-            let fullH = geometry.size.height
-            let square = min(fullW, fullH)
-            let letterboxX = (fullW - square) / 2
-            let letterboxY = (fullH - square) / 2
-            let boxSize = square * CGFloat(boundingBoxSize)
-            let boxMinX = letterboxX + (square - boxSize) / 2
-            let boxMinY = letterboxY + (square - boxSize) / 2
-            let drawingBounds = CGRect(x: boxMinX, y: boxMinY, width: boxSize, height: boxSize)
-            
-            ForEach(viewModel.currentCharacter.strokes, id: \.id) { stroke in
-                VariableWidthStrokeView(
-                    stroke: stroke,
-                    color: Color.black,
-                    speedSensitivity: strokeSpeedSensitivity,
-                    pressureSensitivity: strokePressureSensitivity,
-                    sizeFactor: strokeSizeFactor
-                )
-            }
-            .clipShape(Rectangle().path(in: drawingBounds))
-            
-            if let live = viewModel.currentStroke {
-                VariableWidthStrokeView(
-                    stroke: live,
-                    color: Color.black.opacity(0.8),
-                    speedSensitivity: strokeSpeedSensitivity,
-                    pressureSensitivity: strokePressureSensitivity,
-                    sizeFactor: strokeSizeFactor
-                )
-                .clipShape(Rectangle().path(in: drawingBounds))
-            }
-        }
-        .contentShape(Rectangle())
-        .overlay(
-            TouchCaptureView(
-                onBegan: { pt, pressure in
-                    if viewModel.currentStroke == nil {
-                        viewModel.beginStrokeWithPressure(at: pt, pressure: pressure)
-                    } else {
-                        viewModel.continueStrokeWithPressure(at: pt, pressure: pressure)
-                    }
-                },
-                onMoved: { pt, pressure in
-                    if viewModel.currentStroke == nil {
-                        viewModel.beginStrokeWithPressure(at: pt, pressure: pressure)
-                    } else {
-                        viewModel.continueStrokeWithPressure(at: pt, pressure: pressure)
-                    }
-                },
-                onEnded: {
-                    viewModel.endStroke()
-                }
-            )
-        )
-    }
-    
-    // Color-coded feedback canvas
-    private var coloredFeedbackCanvas: some View {
-        GeometryReader { geometry in
-            if let result = analysisResult {
-                // Normalize strokes using the same bounding box as the analysis
-                let normalizedStrokes = StrokeAnalyzer.normalizeUserStrokes(result.userStrokes, boundingBox: currentBoundingBox)
-                let size = min(geometry.size.width, geometry.size.height)
-                
-                ForEach(Array(normalizedStrokes.enumerated()), id: \.offset) { index, stroke in
-                    let strokeColor = getStrokeColor(for: index, result: result)
-                    Canvas { context, _ in
-                        let pts = stroke.displayPoints
-                        guard !pts.isEmpty else { return }
-                        let isLikelyNonPencil = pts.allSatisfy { $0.pressure >= 0.999 }
-                        func widthFor(_ pressure: CGFloat, _ speed: CGFloat) -> CGFloat {
-                            let minW: CGFloat = 8.0 * CGFloat(strokeSizeFactor)
-                            let maxW: CGFloat = 28.0 * CGFloat(strokeSizeFactor)
-                            let baseV0: CGFloat = 1500.0
-                            let v0: CGFloat = baseV0 / max(0.1, CGFloat(strokeSpeedSensitivity))
-                            let v = max(0.0, speed)
-                            let factor = 1.0 / (1.0 + v / v0)
-                            let pEff = max(0.0, min(1.0, pressure * CGFloat(strokePressureSensitivity)))
-                            let base = minW + (maxW - minW) * pEff * factor
-                            return base * (isLikelyNonPencil ? 0.5 : 1.0)
-                        }
-                        if pts.count == 1 {
-                            let w = widthFor(pts[0].pressure, pts[0].speed)
-                            let p = CGPoint(x: pts[0].location.x * size, y: pts[0].location.y * size)
-                            let rect = CGRect(x: p.x - w/2, y: p.y - w/2, width: w, height: w)
-                            context.fill(Path(ellipseIn: rect), with: .color(strokeColor))
-                        } else {
-                            var prevW: CGFloat = 0
-                            for i in 1..<pts.count {
-                                let p0n = pts[i-1]
-                                let p1n = pts[i]
-                                let p0 = CGPoint(x: p0n.location.x * size, y: p0n.location.y * size)
-                                let p1 = CGPoint(x: p1n.location.x * size, y: p1n.location.y * size)
-                                let speed = max(0.001, (p0n.speed + p1n.speed) * 0.5)
-                                let pressure = (p0n.pressure + p1n.pressure) * 0.5
-                                var w = widthFor(pressure, speed)
-                                if prevW > 0 { w = 0.7 * prevW + 0.3 * w }
-                                prevW = w
-                                var seg = Path()
-                                seg.move(to: p0)
-                                seg.addLine(to: p1)
-                                context.stroke(seg, with: .color(strokeColor), style: StrokeStyle(lineWidth: w, lineCap: .round, lineJoin: .round))
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-    
-    
-    
-    // Perfect Character Banner
-    private var perfectCharacterBanner: some View {
-        HStack {
-            Text("Perfect Character!")
+    private func characterFeedbackRow(for charIndex: Int, containerWidth: CGFloat) -> some View {
+        let boxSize = min((containerWidth - 72) / 2, 300)
+        
+        return VStack(spacing: 12) {
+            Text("Character \(charIndex + 1): \(currentCharacters[charIndex])")
                 .font(.title2)
                 .fontWeight(.bold)
-                .foregroundColor(.white)
-        }
-        .padding(.horizontal, 32)
-        .padding(.vertical, 16)
-        .background(
-            LinearGradient(
-                gradient: Gradient(colors: [Color.green, Color.green.opacity(0.8)]),
-                startPoint: .leading,
-                endPoint: .trailing
-            )
-        )
-        .cornerRadius(16)
-        .shadow(color: Color.green.opacity(0.5), radius: 10, x: 0, y: 5)
-        .padding(.top, 20)
-    }
-    
-    // True character canvas - shows complete reference character from dataset
-    private var trueCharacterCanvas: some View {
-        GeometryReader { geometry in
-            if let result = analysisResult {
-                let size = min(geometry.size.width, geometry.size.height)
-                
-                // Draw all reference strokes as filled shapes
-                ForEach(0..<result.referenceStrokes.count, id: \.self) { index in
-                    ReferenceStrokeShape(
-                        referenceStroke: result.referenceStrokes[index],
-                        canvasSize: size
+                .foregroundColor(Color("Primary900"))
+            
+            HStack(spacing: 16) {
+                // User's strokes with animation
+                VStack(spacing: 8) {
+                    Text("Your Drawing")
+                        .font(.headline)
+                        .foregroundColor(Color("Primary700"))
+                    
+                    ZStack {
+                        Color.white
+                        
+                        if charIndex < savedUserStrokes.count {
+                            userStrokesAnimationView(for: charIndex, size: boxSize)
+                        }
+                    }
+                    .frame(width: boxSize, height: boxSize)
+                    .cornerRadius(12)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 12)
+                            .stroke(Color.gray.opacity(0.3), lineWidth: 1)
                     )
-                    .fill(Color.black)
                 }
-            }
-        }
-    }
-
-    // ----- below are helper functions -----
-    
-    // Determine stroke color based on correctness
-    private func getStrokeColor(for userStrokeIndex: Int, result: CharacterAnalysisResult) -> Color {
-        guard userStrokeIndex < result.strokeResults.count else { return .red }
-        
-        let strokeResult = result.strokeResults[userStrokeIndex]
-        
-        // Check if stroke is matched
-        guard let matchedRefIndex = strokeResult.bestMatchIndex else {
-            return .red // No match = red
-        }
-        
-        // Check if it's in the correct position (user stroke index matches reference stroke index)
-        if matchedRefIndex == userStrokeIndex {
-            return .green // Correct position = green
-        } else {
-            return .yellow // Correct stroke but wrong order = yellow
-        }
-    }
-
-
-    private func startSession() {
-        guard !flashcardItems.isEmpty else { return }
-        inSession = true
-        prepareInitialPrompt()
-        viewModel.clear()
-        perfectStreakCount = 0
-        sessionAttempted.removeAll()
-        sessionPerfectCount = 0
-        showCongrats = false
-        prevStreakBeforeFinish = 0
-    }
-
-    private func prepareInitialPrompt() {
-        if shuffle {
-            currentIndex = Int.random(in: 0..<flashcardItems.count)
-        } else {
-            currentIndex = 0
-        }
-        if !flashcardItems.isEmpty {
-            let item = flashcardItems[currentIndex]
-            currentPrompt = item.definition
-            currentCharacter = item.hanzi
-        }
-    }
-
-    private func finishCharacter() {
-        // Perform stroke analysis with baseline algorithm
-        let userStrokes = viewModel.currentCharacter.strokes
-        
-        if !currentCharacter.isEmpty {
-            // Calculate the bounding box based on the visual guide box
-            // Store it so feedback views can use the same normalization
-            currentBoundingBox = calculateBoundingBox(for: userStrokes)
-            
-            analysisResult = StrokeAnalyzer.analyzeCharacter(
-                userStrokes: userStrokes,
-                character: currentCharacter,
-                boundingBox: currentBoundingBox,
-                errorThreshold: enableStrokeRemoval ? 0.5 : Double.infinity
-            )
-            showFeedback = true
-            
-            // Check if character is perfect
-            checkIfPerfect()
-            
-            // Start animation
-        }
-        
-        // Remember streak before applying result so we can restore on retry
-        prevStreakBeforeFinish = perfectStreakCount
-        
-        viewModel.completeCurrentCharacter()
-        if isPerfectCharacter {
-            perfectStreakCount += 1
-        } else {
-            perfectStreakCount = 0
-        }
-        // Track session completion and perfects
-        sessionAttempted.insert(currentIndex)
-        if isPerfectCharacter { sessionPerfectCount += 1 }
-        if sessionAttempted.count >= flashcardItems.count {
-            showCongrats = true
-        }
-    }
-
-    private func restartSet() {
-        sessionAttempted.removeAll()
-        sessionPerfectCount = 0
-        perfectStreakCount = 0
-        analysisResult = nil
-        showFeedback = false
-        viewModel.clear()
-        prevStreakBeforeFinish = 0
-        if shuffle {
-            currentIndex = Int.random(in: 0..<flashcardItems.count)
-        } else {
-            currentIndex = 0
-        }
-        if !flashcardItems.isEmpty {
-            let item = flashcardItems[currentIndex]
-            currentPrompt = item.definition
-            currentCharacter = item.hanzi
-        }
-        showCongrats = false
-    }
-
-    private var congratulationsOverlay: some View {
-        ZStack {
-            Color.black.opacity(0.4).ignoresSafeArea()
-            VStack(spacing: 16) {
-                Image(systemName: "star.circle.fill")
-                    .font(.system(size: 48))
-                    .foregroundColor(Color("Blue 700"))
-                Text("Congratulations!")
-                    .font(.title2)
-                    .fontWeight(.bold)
-                    .foregroundColor(Color("Blue 900"))
-                let total = max(1, flashcardItems.count)
-                Text("Perfect characters: \(sessionPerfectCount)/\(total)")
-                    .font(.headline.monospacedDigit())
-                    .foregroundColor(Color("Blue 700"))
-                HStack(spacing: 12) {
-                    Button(action: { showCongrats = false }) {
-                        Text("Close")
-                            .foregroundColor(Color("Blue 700"))
-                            .padding(.vertical, 10)
-                            .padding(.horizontal, 16)
-                            .background(Color.white)
-                            .cornerRadius(10)
-                            .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color("Blue 700"), lineWidth: 1))
-                    }
-                    Button(action: restartSet) {
-                        HStack { Image(systemName: "arrow.clockwise"); Text("Restart Set") }
-                            .foregroundColor(Color.white)
-                            .padding(.vertical, 10)
-                            .padding(.horizontal, 16)
-                            .background(Color("Blue 700"))
-                            .cornerRadius(10)
-                    }
-                }
-            }
-            .padding(24)
-            .background(Color.white)
-            .cornerRadius(16)
-            .shadow(color: Color.black.opacity(0.2), radius: 16, x: 0, y: 8)
-            .padding(.horizontal, 24)
-        }
-    }
-    
-    /// Calculate the bounding box for stroke normalization based on the visual guide box
-    private func calculateBoundingBox(for strokes: [Stroke]) -> CGRect? {
-        guard !strokes.isEmpty else { return nil }
-        // The drawing view may not be square. The visual guide square is centered
-        // within the full drawing area. Compute its absolute origin accordingly.
-        let fullW = drawingAreaSize.width
-        let fullH = drawingAreaSize.height
-        let square = min(fullW, fullH)
-        let letterboxX = (fullW - square) / 2
-        let letterboxY = (fullH - square) / 2
-        let boxSize = square * CGFloat(boundingBoxSize)
-        let boxMinX = letterboxX + (square - boxSize) / 2
-        let boxMinY = letterboxY + (square - boxSize) / 2
-        print("📦 Bounding box: full=(\(fullW),\(fullH)), square=\(square), boxSize=\(boxSize), origin=(\(boxMinX), \(boxMinY))")
-        return CGRect(x: boxMinX, y: boxMinY, width: boxSize, height: boxSize)
-    }
-    
-    
-    
-    // Check if all strokes are correct and in the right order
-    private func checkIfPerfect() {
-        guard let result = analysisResult else {
-            isPerfectCharacter = false
-            return
-        }
-        
-        // All strokes must be matched and in correct positions
-        let allCorrect = result.strokeResults.enumerated().allSatisfy { index, strokeResult in
-            guard let matchedRefIndex = strokeResult.bestMatchIndex else { return false }
-            return matchedRefIndex == index
-        }
-        
-        // Also check that we have the right number of strokes
-        let correctCount = result.userStrokes.count == result.referenceStrokes.count
-        
-        isPerfectCharacter = allCorrect && correctCount
-        
-        // Animate banner appearance
-        if isPerfectCharacter {
-            withAnimation(.spring(response: 0.6, dampingFraction: 0.7)) {
-                // Banner will appear
-            }
-        }
-    }
-    
-    // Settings panel view (baseline algorithm)
-    private var settingsPanel: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            HStack {
-                Spacer()
-                Button(action: resetParameters) {
-                    Text("Reset")
-                        .font(.caption)
-                        .foregroundColor(Color.white)
-                        .padding(.vertical, 6)
-                        .padding(.horizontal, 12)
-                        .background(Color("Blue 700"))
-                        .cornerRadius(8)
-                }
-            }
-            
-            VStack(alignment: .leading, spacing: 12) {
-                VStack(alignment: .leading, spacing: 4) {
+                
+                // Reference character with animation
+                VStack(spacing: 8) {
                     HStack {
-                        Text("Bounding Box Size")
-                            .font(.subheadline)
                         Spacer()
-                        Text(String(format: "%.0f%%", boundingBoxSize * 100))
-                            .font(.subheadline.monospacedDigit())
-                            .foregroundColor(Color("Blue 700"))
-                    }
-
-                    Slider(value: $boundingBoxSize, in: 0.2...1.0, step: 0.05)
-                        .accentColor(Color("Blue 700"))
-                }
-
-                // Animation Speed
-                VStack(alignment: .leading, spacing: 4) {
-                    HStack {
-                        Text("Animation Speed")
-                            .font(.subheadline)
+                        Text("Reference")
+                            .font(.headline)
+                            .foregroundColor(Color("Primary700"))
                         Spacer()
-                        Text(String(format: "%.1fs / stroke", secondsPerStroke))
-                            .font(.subheadline.monospacedDigit())
-                            .foregroundColor(Color("Blue 700"))
                     }
-                    Slider(value: $secondsPerStroke, in: 0.10...1.50, step: 0.05)
-                        .accentColor(Color("Blue 700"))
-                }
-                // Stroke width controls
-                VStack(alignment: .leading, spacing: 4) {
-                    HStack {
-                        Text("Stroke Size")
-                            .font(.subheadline)
-                        Spacer()
-                        Text(String(format: "%.2fx", strokeSizeFactor))
-                            .font(.subheadline.monospacedDigit())
-                            .foregroundColor(Color("Blue 700"))
+                    
+                    ZStack {
+                        // Animated reference
+                        referenceAnimationView(for: charIndex, size: boxSize)
+                            .frame(width: boxSize, height: boxSize)
+                            .cornerRadius(12)
+                        
+                        // Static reference in top right corner (overlaid on top)
+                        VStack {
+                            HStack {
+                                Spacer()
+                                ZStack {
+                                    Color.white.opacity(0.95)
+                                    trueCharacterCanvas(for: charIndex, size: boxSize * 0.3)
+                                }
+                                .frame(width: boxSize * 0.3, height: boxSize * 0.3)
+                                .cornerRadius(8)
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 8)
+                                        .stroke(Color.gray.opacity(0.3), lineWidth: 1)
+                                )
+                                .padding(8)
+                            }
+                            Spacer()
+                        }
                     }
-                    Slider(value: $strokeSizeFactor, in: 0.5...2.0, step: 0.05)
-                        .accentColor(Color("Blue 700"))
-                }
-
-                // Pressure sensitivity
-                VStack(alignment: .leading, spacing: 4) {
-                    HStack {
-                        Text("Pressure Sensitivity")
-                            .font(.subheadline)
-                        Spacer()
-                        Text(String(format: "%.2fx", strokePressureSensitivity))
-                            .font(.subheadline.monospacedDigit())
-                            .foregroundColor(Color("Blue 700"))
-                    }
-                    Slider(value: $strokePressureSensitivity, in: 0.25...2.0, step: 0.05)
-                        .accentColor(Color("Blue 700"))
-                }
-
-                // Speed sensitivity
-                VStack(alignment: .leading, spacing: 4) {
-                    HStack {
-                        Text("Speed Sensitivity")
-                            .font(.subheadline)
-                        Spacer()
-                        Text(String(format: "%.2fx", strokeSpeedSensitivity))
-                            .font(.subheadline.monospacedDigit())
-                            .foregroundColor(Color("Blue 700"))
-                    }
-                    Slider(value: $strokeSpeedSensitivity, in: 0.25...3.0, step: 0.05)
-                        .accentColor(Color("Blue 700"))
-                }
-
-                // Stroke Removal Toggle
-                HStack {
-                    Text("Remove Bad Strokes")
-                        .font(.subheadline)
-                    Spacer()
-                    Toggle("", isOn: $enableStrokeRemoval)
-                        .labelsHidden()
+                    .frame(width: boxSize, height: boxSize)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 12)
+                            .stroke(Color.gray.opacity(0.3), lineWidth: 1)
+                    )
                 }
             }
         }
         .padding(16)
-        .background(Color.white.opacity(0.95))
-        .cornerRadius(12)
-        .shadow(color: Color.black.opacity(0.15), radius: 8, x: 0, y: 4)
-        .padding(.horizontal, 24)
-        .padding(.top, 8)
+        .background(Color("Secondary100").opacity(0.3))
+        .cornerRadius(16)
     }
 
-    // Settings sheet wrapper to isolate heavy UI updates and freeze animation/content underneath
+    private var replayButton: some View {
+        Button(action: { replayNonce += 1 }) {
+            Image(systemName: "arrow.clockwise")
+                .font(.title3)
+                .foregroundColor(Color("Primary700"))
+                .padding(8)
+                .background(Color.white)
+                .clipShape(Circle())
+                .shadow(color: Color.black.opacity(0.1), radius: 4, x: 0, y: 2)
+        }
+    }
+
+    private func strokeView(_ stroke: Stroke, color: Color) -> some View {
+        VariableWidthStrokeView(
+            stroke: stroke, color: color,
+            speedSensitivity: strokeSpeedSensitivity,
+            pressureSensitivity: strokePressureSensitivity,
+            sizeFactor: strokeSizeFactor
+        )
+    }
+
+    // MARK: Reference character views
+
+    private func trueCharacterCanvas(for charIndex: Int, size: CGFloat) -> some View {
+        Group {
+            if charIndex < currentCharacters.count {
+                let character = currentCharacters[charIndex]
+                let strokes = SVGParser.parseCharacter(character)
+                ForEach(strokes.indices, id: \.self) { i in
+                    ReferenceStrokeShapeView(
+                        referenceStroke: strokes[i],
+                        canvasSize: size)
+                    .fill(Color.black.opacity(0.7))
+                }
+            }
+        }
+    }
+
+    private func userStrokesAnimationView(for charIndex: Int, size: CGFloat) -> some View {
+        Group {
+            if charIndex < savedUserStrokes.count {
+                let strokes = savedUserStrokes[charIndex]
+                UserStrokesMaskRevealAnimationView(
+                    strokes:             strokes,
+                    canvasSize:          size,
+                    sourceCanvasSize:    size,
+                    totalDuration:       max(0.1, Double(strokes.count) * secondsPerStroke),
+                    replayNonce:         replayNonce,
+                    speedSensitivity:    strokeSpeedSensitivity,
+                    pressureSensitivity: strokePressureSensitivity,
+                    sizeFactor:          strokeSizeFactor
+                )
+                .id(replayNonce)
+            }
+        }
+    }
+
+    private func referenceAnimationView(for charIndex: Int, size: CGFloat) -> some View {
+        Group {
+            if charIndex < currentCharacters.count {
+                let character = currentCharacters[charIndex]
+                let refStrokes = SVGParser.parseCharacter(character)
+                ReferenceStrokeMaskAnimationView(
+                    referenceStrokes:    refStrokes,
+                    userStrokes:         [],
+                    strokeResults:       [],
+                    originalCanvasSize:  size,
+                    boundingBox:         nil,
+                    canvasSize:          size,
+                    totalDuration:       max(0.1, Double(refStrokes.count) * secondsPerStroke),
+                    replayNonce:         replayNonce,
+                    pause:               showSettings,
+                    speedSensitivity:    strokeSpeedSensitivity,
+                    pressureSensitivity: strokePressureSensitivity,
+                    sizeFactor:          strokeSizeFactor
+                )
+                .id(replayNonce)
+            }
+        }
+    }
+
+
+    // MARK: Bottom action bar
+
+    private var bottomActionBar: some View {
+        VStack(spacing: 0) {
+            // Difficulty rating (shown after check in draw mode)
+            if practiceMode == .draw && showFeedback && drawModeDifficulty == nil {
+                compactDifficultyPanel
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
+            
+            // Action buttons
+            HStack(spacing: 12) {
+                if practiceMode == .draw {
+                    checkButton
+                    if showFeedback {
+                        nextButton
+                    }
+                }
+            }
+            .padding(.horizontal, 24).padding(.vertical, 16)
+            .background(Color("Secondary100").opacity(0.3))
+        }
+    }
+    
+    private var compactDifficultyPanel: some View {
+        VStack(spacing: 12) {
+            Text("Rate difficulty:")
+                .font(.subheadline)
+                .fontWeight(.semibold)
+                .foregroundColor(Color("Primary900"))
+            
+            HStack(spacing: 8) {
+                ForEach(DifficultyRating.allCases, id: \.self) { rating in
+                    Button(action: {
+                        withAnimation {
+                            drawModeDifficulty = rating
+                            let currentCard = flashcardItems[currentIndex]
+                            difficultyRatings[currentCard.id] = rating
+                            
+                            // Update FSRS data for this card
+                            fsrsService.reviewPromptToChar(cardId: currentCard.id, rating: rating)
+                        }
+                    }) {
+                        VStack(spacing: 4) {
+                            Image(systemName: rating.icon)
+                                .font(.title3)
+                            Text(rating.rawValue)
+                                .font(.caption2)
+                                .fontWeight(.medium)
+                        }
+                        .foregroundColor(.white)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 12)
+                        .background(rating.color)
+                        .cornerRadius(10)
+                    }
+                }
+            }
+        }
+        .padding(16)
+        .background(Color.white)
+        .shadow(color: Color.black.opacity(0.1), radius: 4, x: 0, y: -2)
+    }
+
+
+    private var checkButton: some View {
+        Button(action: finishCharacter) {
+            HStack {
+                Image(systemName: "checkmark.circle.fill")
+                Text("Check")
+            }
+            .font(.headline).foregroundColor(Color("Secondary100"))
+            .frame(maxWidth: .infinity).padding(.vertical, 16)
+            .background(Color("Primary700")).cornerRadius(12)
+            .shadow(color: Color("Primary700").opacity(0.3), radius: 8, x: 0, y: 4)
+        }
+        .disabled(showFeedback)
+        .opacity(showFeedback ? 0.5 : 1.0)
+    }
+
+    private var nextButton: some View {
+        Button(action: nextCard) {
+            HStack {
+                Text("Next")
+                Image(systemName: "arrow.right")
+            }
+            .font(.headline).foregroundColor(Color("Primary700"))
+            .frame(maxWidth: .infinity).padding(.vertical, 16)
+            .background(Color.white).cornerRadius(12)
+            .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color("Primary700"), lineWidth: 2))
+            .shadow(color: Color.black.opacity(0.1), radius: 4, x: 0, y: 2)
+        }
+        .disabled(showFeedback && drawModeDifficulty == nil)
+        .opacity((showFeedback && drawModeDifficulty == nil) ? 0.5 : 1.0)
+    }
+
+
+    // MARK: End page
+
+    private var endPageView: some View {
+        VStack(spacing: 20) {
+            Text("Session Complete")
+                .font(.largeTitle).bold().foregroundColor(Color("Primary900"))
+            Text("\(reviewedCardIds.count) cards reviewed")
+                .font(.title2).foregroundColor(Color("Primary700"))
+            Button("Start Again") { startSession() }
+                .font(.headline).foregroundColor(.white)
+                .padding(.horizontal, 32).padding(.vertical, 14)
+                .background(Color("Primary700")).cornerRadius(12)
+            Button("Back to Setup") { inSession = false }
+                .font(.subheadline).foregroundColor(Color("Primary700"))
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Color("Secondary100"))
+    }
+
+    // MARK: Settings
+
     private var settingsSheet: some View {
         NavigationStack {
             ScrollView {
-                settingsPanel
-                    .padding(.top, 12)
-                
-                // Help & Guide Link
+                settingsPanel.padding(.top, 12)
                 NavigationLink(destination: helpGuideView) {
                     HStack {
-                        Image(systemName: "questionmark.circle")
-                            .foregroundColor(Color("Blue 700"))
-                        Text("How to Use")
-                            .font(.subheadline)
-                            .foregroundColor(Color("Blue 900"))
+                        Image(systemName: "questionmark.circle").foregroundColor(Color("Primary700"))
+                        Text("How to Use").font(.subheadline).foregroundColor(Color("Primary900"))
                         Spacer()
-                        Image(systemName: "chevron.right")
-                            .font(.caption)
-                            .foregroundColor(Color("Neutral 700"))
+                        Image(systemName: "chevron.right").font(.caption)
+                            .foregroundColor(Color("Neutral700"))
                     }
-                    .padding(16)
-                    .background(Color.white.opacity(0.95))
-                    .cornerRadius(12)
+                    .padding(16).background(Color.white.opacity(0.95)).cornerRadius(12)
                     .shadow(color: Color.black.opacity(0.1), radius: 4, x: 0, y: 2)
-                    .padding(.horizontal, 24)
-                    .padding(.top, 16)
+                    .padding(.horizontal, 24).padding(.top, 16)
                 }
             }
             .navigationTitle("Settings")
@@ -1401,976 +1796,236 @@ struct FlashcardPracticeView: View {
             }
         }
     }
-    
-    // Help & Guide View
+
+    private var settingsPanel: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            HStack {
+                Spacer()
+                Button("Reset") { resetParameters() }
+                    .font(.caption).foregroundColor(.white)
+                    .padding(.vertical, 6).padding(.horizontal, 12)
+                    .background(Color("Primary700")).cornerRadius(8)
+            }
+
+            settingSlider("Bounding Box Size",
+                          value: $boundingBoxSize, range: 0.2...1.0, step: 0.05,
+                          format: { String(format: "%.0f%%", $0 * 100) })
+
+            settingSlider("Animation Speed",
+                          value: $secondsPerStroke, range: 0.10...1.50, step: 0.05,
+                          format: { String(format: "%.1fs / stroke", $0) })
+
+            settingSlider("Stroke Size",
+                          value: $strokeSizeFactor, range: 0.5...2.0, step: 0.05,
+                          format: { String(format: "%.2fx", $0) })
+
+            settingSlider("Pressure Sensitivity",
+                          value: $strokePressureSensitivity, range: 0.25...2.0, step: 0.05,
+                          format: { String(format: "%.2fx", $0) })
+
+            settingSlider("Speed Sensitivity",
+                          value: $strokeSpeedSensitivity, range: 0.25...3.0, step: 0.05,
+                          format: { String(format: "%.2fx", $0) })
+
+            HStack {
+                Text("Remove Bad Strokes").font(.subheadline)
+                Spacer()
+                Toggle("", isOn: $enableStrokeRemoval).labelsHidden()
+            }
+        }
+        .padding(16)
+        .background(Color.white.opacity(0.95))
+        .cornerRadius(12)
+        .shadow(color: Color.black.opacity(0.15), radius: 8, x: 0, y: 4)
+        .padding(.horizontal, 24).padding(.top, 8)
+    }
+
+    private func settingSlider(
+        _ label: String,
+        value: Binding<Double>,
+        range: ClosedRange<Double>,
+        step: Double,
+        format: @escaping (Double) -> String
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack {
+                Text(label).font(.subheadline)
+                Spacer()
+                Text(format(value.wrappedValue))
+                    .font(.subheadline.monospacedDigit())
+                    .foregroundColor(Color("Primary700"))
+            }
+            Slider(value: value, in: range, step: step).accentColor(Color("Primary700"))
+        }
+    }
+
+    // MARK: Help guide
+
     private var helpGuideView: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 24) {
-                // Overview Section
-                VStack(alignment: .leading, spacing: 12) {
-                    Label("Overview", systemImage: "info.circle.fill")
-                        .font(.title2.bold())
-                        .foregroundColor(Color("Blue 900"))
-                    
-                    Text("The purpose of Chinese Character Autograder is to help you learn new Chinese Characters and write them well! The app does this by reinforcing the strokes you draw correctly, and rejecting or adjusting the strokes that need work. Over time, this training will create excellence in your writing.")
-                        .font(.body)
-                        .foregroundColor(Color("Blue 900"))
+                helpSection("Overview", icon: "info.circle.fill") {
+                    Text("The purpose of Chinese Character Autograder is to help you learn new Chinese Characters and write them well. The app reinforces strokes you draw correctly, and rejects or adjusts strokes that need work.")
+                        .font(.body).foregroundColor(Color("Primary900"))
                 }
-                
+
                 Divider()
-                
-                // How to Use Flashcards Section
-                VStack(alignment: .leading, spacing: 12) {
-                    Label("How to Use Flashcards", systemImage: "hand.draw.fill")
-                        .font(.title2.bold())
-                        .foregroundColor(Color("Blue 900"))
-                    
+
+                helpSection("How to Use Flashcards", icon: "hand.draw.fill") {
                     VStack(alignment: .leading, spacing: 8) {
-                        helpStep(number: "1", text: "Select a learning set that has definitions")
-                        helpStep(number: "2", text: "Read the prompt and draw the character")
-                        helpStep(number: "3", text: "Tap 'Check' to see your feedback")
-                        helpStep(number: "4", text: "Study your mistakes and successes, then click 'Back to Draw' to retry, or click 'Next' to continue")
-                        helpStep(number: "5", text: "Adjust your settings to change the font of your stroke, whether strokes should be marked incorrect or not, the size of the bounding box, etc.")
+                        helpStep("1", "Select a learning set that has definitions")
+                        helpStep("2", "Read the prompt and draw the character")
+                        helpStep("3", "Tap 'Check' to see your feedback")
+                        helpStep("4", "Study feedback, then retry or advance")
+                        helpStep("5", "Use Settings to adjust stroke appearance and bounding box")
                     }
                 }
-                
+
                 Divider()
-                
-                // Feedback Colors Section
-                VStack(alignment: .leading, spacing: 12) {
-                    Label("Understanding Feedback", systemImage: "paintpalette.fill")
-                        .font(.title2.bold())
-                        .foregroundColor(Color("Blue 900"))
-                    
-                    VStack(alignment: .leading, spacing: 8) {
-                        HStack(spacing: 12) {
-                            Circle().fill(Color.green).frame(width: 16, height: 16)
-                            Text("**Green** — Stroke is correct")
-                                .font(.subheadline)
-                        }
-                        HStack(spacing: 12) {
-                            Circle().fill(Color.yellow).frame(width: 16, height: 16)
-                            Text("**Yellow** — Stroke is in the wrong order")
-                                .font(.subheadline)
-                        }
-                        HStack(spacing: 12) {
-                            Circle().fill(Color.red).frame(width: 16, height: 16)
-                            Text("**Red** — Stroke doesn't match any true strokes")
-                                .font(.subheadline)
-                        }
-                    }
-                    .foregroundColor(Color("Blue 900"))
+
+                helpSection("Understanding Feedback", icon: "paintpalette.fill") {
+                    Text("Review your strokes alongside the animated reference character to improve your writing.")
+                        .font(.subheadline).foregroundColor(Color("Primary900"))
                 }
-                
+
                 Divider()
-                
-                // Other Notes Section
-                VStack(alignment: .leading, spacing: 12) {
-                    Label("Other Notes", systemImage: "lightbulb.fill")
-                        .font(.title2.bold())
-                        .foregroundColor(Color("Blue 900"))
-                    
-                    Text("Strokes are matched based on their position relative to the bounding box that you draw in, and their similarity to the true stroke. This means that you must draw the character to the scale of the box. For example, if you draw a full character only in the upper left corner of a box, there will be mismatches.")
-                        .font(.subheadline)
-                        .foregroundColor(Color("Blue 900"))
+
+                helpSection("Other Notes", icon: "lightbulb.fill") {
+                    Text("Strokes are matched based on position relative to the bounding box. Draw to the scale of the box for accurate results.")
+                        .font(.subheadline).foregroundColor(Color("Primary900"))
                 }
-                
+
                 Spacer(minLength: 40)
             }
             .padding(20)
         }
-        .background(Color(red: 0.68, green: 0.85, blue: 0.9).opacity(0.3))
+        .background(Color("Secondary100").opacity(0.3))
         .navigationTitle("How to Use")
         .navigationBarTitleDisplayMode(.large)
     }
-    
-    // Helper views for the guide
-    private func helpStep(number: String, text: String) -> some View {
-        HStack(alignment: .top, spacing: 12) {
-            Text(number)
-                .font(.caption.bold())
-                .foregroundColor(.white)
-                .frame(width: 22, height: 22)
-                .background(Color("Blue 700"))
-                .clipShape(Circle())
-            Text(text)
-                .font(.subheadline)
-                .foregroundColor(Color("Blue 900"))
+
+    private func helpSection<Content: View>(
+        _ title: String, icon: String,
+        @ViewBuilder content: () -> Content
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Label(title, systemImage: icon)
+                .font(.title2.bold()).foregroundColor(Color("Primary900"))
+            content()
         }
     }
-    
-    private func resetParameters() {
-        boundingBoxSize = 0.8
-        secondsPerStroke = 0.5
-        enableStrokeRemoval = false
-        strokeSpeedSensitivity = 1.0
-        strokePressureSensitivity = 1.0
-        strokeSizeFactor = 1.0
+
+    private func helpStep(_ number: String, _ text: String) -> some View {
+        HStack(alignment: .top, spacing: 12) {
+            Text(number)
+                .font(.caption.bold()).foregroundColor(.white)
+                .frame(width: 22, height: 22)
+                .background(Color("Primary700")).clipShape(Circle())
+            Text(text).font(.subheadline).foregroundColor(Color("Primary900"))
+        }
+    }
+
+    // MARK: - Session logic
+
+    private func startSession() {
+        guard !flashcardItems.isEmpty else { return }
+        inSession              = true
+        showEndPage            = false
+        reviewedCardIds        = []
+        difficultyRatings      = [:]
+        isFlipped              = false
+        showDifficultyPanel    = false
+        selectedDifficulty     = nil
+        resetDrawState()
+        prepareInitialPrompt()
+    }
+
+    private func resetDrawState() {
+        showFeedback              = false
+        savedUserStrokes          = []
+        userStrokesPerBox         = []
+        activeCharacterBoxIndex   = 0
+        drawModeDifficulty        = nil
+        viewModel.clear()
+        isDrawing = false
+    }
+
+    private func prepareInitialPrompt() {
+        let unreviewed = flashcardItems.filter { !reviewedCardIds.contains($0.id) }
+        currentIndex = unreviewed.first.flatMap { flashcardItems.firstIndex(of: $0) } ?? 0
+        if !flashcardItems.isEmpty {
+            currentPrompt     = flashcardItems[currentIndex].definition
+            currentCharacter  = flashcardItems[currentIndex].hanzi
+        }
     }
 
     private func nextCard() {
         guard !flashcardItems.isEmpty else { return }
-        
-        // Clear feedback, animation, and perfect banner
-        showFeedback = false
-        analysisResult = nil
-        isPerfectCharacter = false
-        currentBoundingBox = nil
-        
+        resetDrawState()
+        resetFlipState()
         if shuffle {
             currentIndex = Int.random(in: 0..<flashcardItems.count)
         } else {
             currentIndex = (currentIndex + 1) % flashcardItems.count
         }
-        let item = flashcardItems[currentIndex]
-        currentPrompt = item.definition
-        currentCharacter = item.hanzi
-        viewModel.clear()
+        currentPrompt    = flashcardItems[currentIndex].definition
+        currentCharacter = flashcardItems[currentIndex].hanzi
+    }
+
+    private func resetFlipState() {
+        isFlipped = false
+        showDifficultyPanel = false
+        selectedDifficulty = nil
+    }
+
+    private func rateAndProceed(_ rating: DifficultyRating) {
+        let currentCard = flashcardItems[currentIndex]
+        reviewedCardIds.insert(currentCard.id)
+        difficultyRatings[currentCard.id] = rating
+        
+        if reviewedCardIds.count >= flashcardItems.count {
+            showEndPage = true
+        } else {
+            nextCard()
+        }
     }
 
     private func previousCard() {
-        guard !flashcardItems.isEmpty else { return }
+        guard !flashcardItems.isEmpty, !shuffle, currentIndex > 0 else { return }
+        resetDrawState()
+        resetFlipState()
+        currentIndex    -= 1
+        currentPrompt    = flashcardItems[currentIndex].definition
+        currentCharacter = flashcardItems[currentIndex].hanzi
+    }
 
-        // If not shuffling and already at the first card, do nothing (preserve current state)
-        if !shuffle && currentIndex == 0 { return }
+    private func finishCharacter() {
+        guard !currentCharacter.isEmpty else { return }
+        
+        // Save all strokes from each box
+        savedUserStrokes = userStrokesPerBox
+        
+        // Show feedback
+        showFeedback = true
+        
+        // Mark as reviewed
+        let currentCard = flashcardItems[currentIndex]
+        reviewedCardIds.insert(currentCard.id)
+    }
 
-        // Clear feedback and state only when navigating
-        showFeedback = false
-        analysisResult = nil
-        isPerfectCharacter = false
-        currentBoundingBox = nil
+    private func restartSet() {
+        resetDrawState()
+        if shuffle { currentIndex = Int.random(in: 0..<flashcardItems.count) } else { currentIndex = 0 }
+        currentPrompt    = flashcardItems[currentIndex].definition
+        currentCharacter = flashcardItems[currentIndex].hanzi
+    }
 
-        // Shuffle jumps randomly; otherwise step back without wrapping
-        if shuffle {
-            currentIndex = Int.random(in: 0..<flashcardItems.count)
-        } else {
-            currentIndex = currentIndex - 1
-        }
-        let item = flashcardItems[currentIndex]
-        currentPrompt = item.definition
-        currentCharacter = item.hanzi
-        viewModel.clear()
+    private func resetParameters() {
+        boundingBoxSize          = 0.8
+        secondsPerStroke         = 0.5
+        enableStrokeRemoval      = false
+        strokeSpeedSensitivity   = 1.0
+        strokePressureSensitivity = 1.0
+        strokeSizeFactor         = 1.0
     }
 }
-
-// MARK: - Reference Stroke Shape
-
-
-// MARK: - CAShapeLayer Stroke Animation
-
-/// UIViewRepresentable that uses CAShapeLayer with proper strokeEnd animation
-struct StrokeAnimationView: UIViewRepresentable {
-    let referenceStrokes: [ReferenceStroke]
-    let canvasSize: CGFloat
-    let animationDuration: Double
-    let currentProgress: Double
-    
-    func makeUIView(context: Context) -> StrokeAnimationContainerView {
-        let view = StrokeAnimationContainerView()
-        view.backgroundColor = .clear
-        return view
-    }
-    
-    func updateUIView(_ uiView: StrokeAnimationContainerView, context: Context) {
-        uiView.updateAnimation(
-            referenceStrokes: referenceStrokes,
-            canvasSize: canvasSize,
-            animationDuration: animationDuration,
-            currentProgress: currentProgress
-        )
-    }
-}
-
-class StrokeAnimationContainerView: UIView {
-    private var strokeLayers: [CAShapeLayer] = []
-    private var lastProgress: Double = 0
-    
-    func updateAnimation(referenceStrokes: [ReferenceStroke], canvasSize: CGFloat, animationDuration: Double, currentProgress: Double) {
-        // If this is a restart (progress went back to 0), rebuild everything
-        if currentProgress < lastProgress {
-            rebuildLayers(referenceStrokes: referenceStrokes, canvasSize: canvasSize)
-        }
-        lastProgress = currentProgress
-        
-        // If layers don't exist yet, build them
-        if strokeLayers.isEmpty {
-            rebuildLayers(referenceStrokes: referenceStrokes, canvasSize: canvasSize)
-        }
-        
-        // Update strokeEnd for each layer based on progress
-        let strokeCount = referenceStrokes.count
-        guard strokeCount > 0 else { return }
-        
-        let timePerStroke = animationDuration / Double(strokeCount)
-        
-        for (index, layer) in strokeLayers.enumerated() {
-            let strokeStartTime = Double(index) * timePerStroke
-            let strokeEndTime = strokeStartTime + timePerStroke
-            let currentTime = currentProgress * animationDuration
-            
-            let strokeEnd: CGFloat
-            if currentTime < strokeStartTime {
-                strokeEnd = 0
-            } else if currentTime >= strokeEndTime {
-                strokeEnd = 1
-            } else {
-                strokeEnd = CGFloat((currentTime - strokeStartTime) / timePerStroke)
-            }
-            
-            // Update without animation (SwiftUI is handling the animation)
-            CATransaction.begin()
-            CATransaction.setDisableActions(true)
-            layer.strokeEnd = strokeEnd
-            CATransaction.commit()
-        }
-    }
-    
-    private func rebuildLayers(referenceStrokes: [ReferenceStroke], canvasSize: CGFloat) {
-        // Remove old layers
-        strokeLayers.forEach { $0.removeFromSuperlayer() }
-        strokeLayers.removeAll()
-        
-        // Create a layer for each stroke
-        for refStroke in referenceStrokes {
-            let path = createPathFromMedianPoints(refStroke.medianPoints, canvasSize: canvasSize)
-            
-            let shapeLayer = CAShapeLayer()
-            shapeLayer.path = path.cgPath
-            shapeLayer.strokeColor = UIColor.black.cgColor
-            shapeLayer.fillColor = UIColor.clear.cgColor
-            shapeLayer.lineWidth = 18
-            shapeLayer.lineCap = .round
-            shapeLayer.lineJoin = .round
-            shapeLayer.strokeEnd = 0
-            
-            layer.addSublayer(shapeLayer)
-            strokeLayers.append(shapeLayer)
-        }
-    }
-    
-    private func createPathFromMedianPoints(_ points: [CGPoint], canvasSize: CGFloat) -> UIBezierPath {
-        let path = UIBezierPath()
-        guard !points.isEmpty else { return path }
-        
-        // Scale points to canvas
-        let scaledPoints = points.map { CGPoint(x: $0.x * canvasSize, y: $0.y * canvasSize) }
-        
-        path.move(to: scaledPoints[0])
-        for i in 1..<scaledPoints.count {
-            path.addLine(to: scaledPoints[i])
-        }
-        
-        return path
-    }
-}
-
-// New StrokePath shape used by drawingCanvas to render user strokes
-private struct StrokePath: Shape {
-    let stroke: Stroke
-    
-    func path(in rect: CGRect) -> Path {
-        var path = Path()
-        // Use displayPoints to get resampled points with timestamps if available
-        let points = stroke.displayPoints.map { $0.location }
-        guard !points.isEmpty else { return path }
-        
-        if points.count == 1 {
-            let p = points[0]
-            path.addEllipse(in: CGRect(x: p.x - 2, y: p.y - 2, width: 4, height: 4))
-            return path
-        }
-        
-        path.move(to: points[0])
-        for i in 1..<points.count {
-            path.addLine(to: points[i])
-        }
-        return path
-    }
-}
-
-/// Static shape for displaying complete reference stroke (no animation)
-private struct ReferenceStrokeShape: Shape {
-    let referenceStroke: ReferenceStroke
-    let canvasSize: CGFloat
-    
-    func path(in rect: CGRect) -> Path {
-        var path = Path()
-        
-        // Parse SVG path and draw complete stroke
-        let segments = parseSVGPath(referenceStroke.svgPath)
-        
-        for segment in segments {
-            switch segment {
-            case .moveTo(let point):
-                let scaled = scaleAndFlipPoint(point)
-                path.move(to: scaled)
-            case .lineTo(let point):
-                let scaled = scaleAndFlipPoint(point)
-                path.addLine(to: scaled)
-            case .quadCurve(let control, let end):
-                let scaledControl = scaleAndFlipPoint(control)
-                let scaledEnd = scaleAndFlipPoint(end)
-                path.addQuadCurve(to: scaledEnd, control: scaledControl)
-            case .cubicCurve(let control1, let control2, let end):
-                let scaledControl1 = scaleAndFlipPoint(control1)
-                let scaledControl2 = scaleAndFlipPoint(control2)
-                let scaledEnd = scaleAndFlipPoint(end)
-                path.addCurve(to: scaledEnd, control1: scaledControl1, control2: scaledControl2)
-            case .closePath:
-                path.closeSubpath()
-            }
-        }
-        
-        return path
-    }
-    
-    private func scaleAndFlipPoint(_ point: CGPoint) -> CGPoint {
-        // svgPath is normalized to [0,1]; draw within 80% inner box with 10% padding on each side
-        let inset: CGFloat = 0.10
-        let scale: CGFloat = 1.0 - inset * 2.0
-        return CGPoint(
-            x: (point.x * scale + inset) * canvasSize,
-            y: (point.y * scale + inset) * canvasSize
-        )
-    }
-    
-    private func parseSVGPath(_ svgPath: String) -> [SVGPathSegment] {
-        var segments: [SVGPathSegment] = []
-        let components = svgPath.split(separator: " ")
-        var i = 0
-        var currentPoint = CGPoint.zero
-        
-        while i < components.count {
-            let command = String(components[i])
-            
-            switch command {
-            case "M":
-                if i + 2 < components.count,
-                   let x = Double(components[i + 1]),
-                   let y = Double(components[i + 2]) {
-                    currentPoint = CGPoint(x: x, y: y)
-                    segments.append(.moveTo(currentPoint))
-                    i += 3
-                } else { i += 1 }
-            case "L":
-                if i + 2 < components.count,
-                   let x = Double(components[i + 1]),
-                   let y = Double(components[i + 2]) {
-                    currentPoint = CGPoint(x: x, y: y)
-                    segments.append(.lineTo(currentPoint))
-                    i += 3
-                } else { i += 1 }
-            case "Q":
-                if i + 4 < components.count,
-                   let x1 = Double(components[i + 1]),
-                   let y1 = Double(components[i + 2]),
-                   let x = Double(components[i + 3]),
-                   let y = Double(components[i + 4]) {
-                    segments.append(.quadCurve(control: CGPoint(x: x1, y: y1), end: CGPoint(x: x, y: y)))
-                    i += 5
-                } else { i += 1 }
-            case "C":
-                if i + 6 < components.count,
-                   let x1 = Double(components[i + 1]),
-                   let y1 = Double(components[i + 2]),
-                   let x2 = Double(components[i + 3]),
-                   let y2 = Double(components[i + 4]),
-                   let x = Double(components[i + 5]),
-                   let y = Double(components[i + 6]) {
-                    segments.append(.cubicCurve(control1: CGPoint(x: x1, y: y1), control2: CGPoint(x: x2, y: y2), end: CGPoint(x: x, y: y)))
-                    i += 7
-                } else { i += 1 }
-            case "Z":
-                segments.append(.closePath)
-                i += 1
-            default:
-                i += 1
-            }
-        }
-        return segments
-    }
-}
-
-/// Represents a segment in an SVG path
-private enum SVGPathSegment {
-    case moveTo(CGPoint)
-    case lineTo(CGPoint)
-    case quadCurve(control: CGPoint, end: CGPoint)
-    case cubicCurve(control1: CGPoint, control2: CGPoint, end: CGPoint)
-    case closePath
-}
-
-// MARK: - Reference Stroke Mask Animation (outline + median reveal)
-struct ReferenceStrokeMaskAnimationView: UIViewRepresentable {
-    let referenceStrokes: [ReferenceStroke]
-    let userStrokes: [Stroke]
-    let strokeResults: [StrokeAnalysisResult]
-    let originalCanvasSize: CGFloat
-    let boundingBox: CGRect?
-    let canvasSize: CGFloat
-    let totalDuration: Double
-    let replayNonce: Int
-    let pause: Bool
-    let debug: Bool = false
-    let debugShowBounds: Bool = false
-    let speedSensitivity: Double
-    let pressureSensitivity: Double
-    let sizeFactor: Double
-    
-    func makeUIView(context: Context) -> ReferenceMaskAnimationContainerView {
-        let view = ReferenceMaskAnimationContainerView()
-        view.backgroundColor = .clear
-        return view
-    }
-    
-    func updateUIView(_ uiView: ReferenceMaskAnimationContainerView, context: Context) {
-        uiView.renderAndAnimate(
-            referenceStrokes: referenceStrokes,
-            userStrokes: userStrokes,
-            strokeResults: strokeResults,
-            originalCanvasSize: originalCanvasSize,
-            boundingBox: boundingBox,
-            canvasSize: canvasSize,
-            totalDuration: totalDuration,
-            replayNonce: replayNonce,
-            pause: pause,
-            debug: debug,
-            debugShowBounds: debugShowBounds,
-            speedSensitivity: speedSensitivity,
-            pressureSensitivity: pressureSensitivity,
-            sizeFactor: sizeFactor
-        )
-    }
-}
-
-final class ReferenceMaskAnimationContainerView: UIView {
-    // Cache to avoid unintended replays on unrelated state changes
-    private var built = false
-    private var prevReplayNonce: Int = -1
-    private var prevCanvasSize: CGFloat = 0
-    private var prevDuration: Double = 0
-    private var prevRefCount: Int = 0
-    private var prevUserCount: Int = 0
-    // Keep references to layers so we can update them without rebuilding/restarting animation
-    private var outlineLayers: [CAShapeLayer] = []
-    private var maskLayers: [CAShapeLayer] = []
-    private var isPaused: Bool = false
-    
-    func renderAndAnimate(referenceStrokes: [ReferenceStroke], userStrokes: [Stroke], strokeResults: [StrokeAnalysisResult], originalCanvasSize: CGFloat, boundingBox: CGRect?, canvasSize: CGFloat, totalDuration: Double, replayNonce: Int, pause: Bool, debug: Bool, debugShowBounds: Bool, speedSensitivity: Double, pressureSensitivity: Double, sizeFactor: Double) {
-        guard !referenceStrokes.isEmpty else { return }
-        layer.masksToBounds = false
-
-        // Apply pause/resume without restarting animations
-        if pause && !isPaused {
-            let pausedTime = layer.convertTime(CACurrentMediaTime(), from: nil)
-            layer.speed = 0
-            layer.timeOffset = pausedTime
-            isPaused = true
-        } else if !pause && isPaused {
-            let pausedTime = layer.timeOffset
-            layer.speed = 1
-            layer.timeOffset = 0
-            layer.beginTime = 0
-            let timeSincePause = layer.convertTime(CACurrentMediaTime(), from: nil) - pausedTime
-            layer.beginTime = timeSincePause
-            isPaused = false
-        }
-
-        // Build a reverse lookup: refIndex -> matched user stroke index
-        var refToUser: [Int: Int] = [:]
-        for (uIdx, r) in strokeResults.enumerated() {
-            if r.isMatched, let refIdx = r.bestMatchIndex {
-                refToUser[refIdx] = uIdx
-            }
-        }
-
-        // Determine if we actually need to rebuild/replay
-        // Only rebuild when explicitly requested (replay button) or when stroke sets change.
-        let needsRebuild = (!built)
-            || (replayNonce != prevReplayNonce)
-            || (prevRefCount != referenceStrokes.count)
-            || (prevUserCount != userStrokes.count)
-
-        if !needsRebuild {
-            // Update existing layers in place to reflect changed matches without restarting animation
-            guard outlineLayers.count == referenceStrokes.count, maskLayers.count == referenceStrokes.count else { return }
-            for (refIndex, ref) in referenceStrokes.enumerated() {
-                let outlineLayer = outlineLayers[refIndex]
-                let maskLayer = maskLayers[refIndex]
-
-                if let uIdx = refToUser[refIndex], uIdx < userStrokes.count {
-                    // Matched: render per-segment stroked sublayers for the user's stroke
-                    let userPath = createUserPath(from: userStrokes[uIdx], canvasSize: canvasSize, bbox: boundingBox)
-                    let r = strokeResults[uIdx]
-                    let strokeUIColor: UIColor = {
-                        if let matchedRef = r.bestMatchIndex, matchedRef == uIdx { return UIColor.systemGreen } else { return UIColor.systemYellow }
-                    }()
-                    outlineLayer.path = nil
-                    outlineLayer.fillColor = nil
-                    outlineLayer.strokeColor = nil
-                    outlineLayer.lineWidth = 0
-                    // Replace existing segment sublayers
-                    outlineLayer.sublayers?.forEach { $0.removeFromSuperlayer() }
-                    let segs = buildSegmentSublayers(stroke: userStrokes[uIdx], canvasSize: canvasSize, bbox: boundingBox, color: strokeUIColor, speedSensitivity: speedSensitivity, pressureSensitivity: pressureSensitivity, sizeFactor: sizeFactor)
-                    segs.forEach { outlineLayer.addSublayer($0) }
-
-                    // Mask follows the user's median path for reveal
-                    maskLayer.path = userPath.cgPath
-                    maskLayer.strokeColor = UIColor.black.cgColor
-                    maskLayer.fillColor = UIColor.clear.cgColor
-                    // Ensure mask width is large enough to cover the thickest outline
-                    if let bb = boundingBox, bb.width > 0, bb.height > 0 {
-                        let widthScale = canvasSize / max(bb.width, bb.height)
-                        let maxW: CGFloat = 28.0 * CGFloat(sizeFactor)
-                        maskLayer.lineWidth = max(1, widthScale * maxW * 2.2)
-                    }
-                    maskLayer.lineCap = .round
-                    maskLayer.lineJoin = .round
-                } else {
-                    // Unmatched: revert to reference outline and median mask
-                    let outlinePath = createBezierPath(from: ref.svgPath, canvasSize: canvasSize)
-                    outlineLayer.path = outlinePath.cgPath
-                    outlineLayer.fillColor = UIColor.black.cgColor
-                    outlineLayer.strokeColor = nil
-
-                    let medianPath = createStrokePath(from: ref.medianPoints, canvasSize: canvasSize)
-                    maskLayer.path = medianPath.cgPath
-                    maskLayer.strokeColor = UIColor.black.cgColor
-                    maskLayer.fillColor = UIColor.clear.cgColor
-                }
-                // Do NOT modify maskLayer.strokeEnd; keep current animation progress
-            }
-            return
-        }
-
-        // Clear previous layers only when genuinely rebuilding
-        layer.sublayers?.forEach { $0.removeFromSuperlayer() }
-        outlineLayers.removeAll()
-        maskLayers.removeAll()
-        for (refIndex, ref) in referenceStrokes.enumerated() {
-            // 1) Full outline as filled shape (reference), or user's per-segment stroked sublayers when matched
-            let outlineLayer = CAShapeLayer()
-            let outlinePath = createBezierPath(from: ref.svgPath, canvasSize: canvasSize)
-            // If this ref stroke is matched, draw the user's path directly (scaled from original canvas size, no inset)
-            if let uIdx = refToUser[refIndex], uIdx < userStrokes.count {
-                let userPath = createUserPath(from: userStrokes[uIdx], canvasSize: canvasSize, bbox: boundingBox)
-                let r = strokeResults[uIdx]
-                let strokeUIColor: UIColor = {
-                    if let refIdx = r.bestMatchIndex, refIdx == uIdx { return UIColor.systemGreen } else { return UIColor.systemYellow }
-                }()
-                outlineLayer.path = nil
-                outlineLayer.fillColor = nil
-                outlineLayer.strokeColor = nil
-                outlineLayer.lineWidth = 0
-                let segs = buildSegmentSublayers(stroke: userStrokes[uIdx], canvasSize: canvasSize, bbox: boundingBox, color: strokeUIColor, speedSensitivity: speedSensitivity, pressureSensitivity: pressureSensitivity, sizeFactor: sizeFactor)
-                segs.forEach { outlineLayer.addSublayer($0) }
-            } else {
-                outlineLayer.path = outlinePath.cgPath
-                outlineLayer.fillColor = UIColor.black.cgColor
-                outlineLayer.strokeColor = nil
-            }
-            outlineLayer.frame = bounds
-            outlineLayer.contentsScale = UIScreen.main.scale
-            
-            // Outline bounds to estimate local thickness requirement
-            let bbox = outlinePath.bounds
-            let maxDim = max(bbox.width, bbox.height)
-            let medLen = medianLength(ref.medianPoints, canvasSize: canvasSize)
-            
-            // 2) Reveal mask: use user path (no inset) for matched strokes; otherwise median path (with 10% inset)
-            let maskLayer = CAShapeLayer()
-            if let uIdx = refToUser[refIndex], uIdx < userStrokes.count {
-                let userMaskPath = createUserPath(from: userStrokes[uIdx], canvasSize: canvasSize, bbox: boundingBox)
-                maskLayer.path = userMaskPath.cgPath
-            } else {
-                maskLayer.path = createStrokePath(from: ref.medianPoints, canvasSize: canvasSize).cgPath
-            }
-            maskLayer.strokeColor = UIColor.black.cgColor
-            maskLayer.fillColor = UIColor.clear.cgColor
-            
-            var lw: CGFloat
-            if let _ = refToUser[refIndex], let bb = boundingBox, bb.width > 0, bb.height > 0 {
-                let widthScale = canvasSize / max(bb.width, bb.height)
-                let maxUserWidth: CGFloat = 28.0 * CGFloat(sizeFactor)
-                let safety: CGFloat = 2.2
-                lw = max(1, maxUserWidth * widthScale * safety)
-            } else {
-                var fallback = max(0.10 * canvasSize, 0.50 * maxDim)
-                if medLen < (0.08 * canvasSize) {
-                    fallback = max(fallback, maxDim * 1.25)
-                }
-                lw = fallback
-            }
-            maskLayer.lineWidth = lw
-            
-            maskLayer.lineCap = .round
-            maskLayer.lineJoin = .round
-            maskLayer.strokeEnd = 0
-            maskLayer.frame = outlineLayer.bounds
-            maskLayer.contentsScale = UIScreen.main.scale
-            
-            outlineLayer.mask = maskLayer
-            layer.addSublayer(outlineLayer)
-            self.outlineLayers.append(outlineLayer)
-            self.maskLayers.append(maskLayer)
-            
-            if debug {
-                let debugMask = CAShapeLayer()
-                debugMask.path = maskLayer.path
-                debugMask.strokeColor = UIColor.red.withAlphaComponent(0.6).cgColor
-                debugMask.fillColor = UIColor.clear.cgColor
-                debugMask.lineWidth = maskLayer.lineWidth
-                debugMask.lineCap = .round
-                debugMask.lineJoin = .round
-                debugMask.frame = outlineLayer.bounds
-                debugMask.zPosition = 1000
-                layer.addSublayer(debugMask)
-            }
-            
-            if debugShowBounds {
-                let rect = outlinePath.bounds
-                let rectPath = UIBezierPath(rect: rect)
-                let dbg = CAShapeLayer()
-                dbg.path = rectPath.cgPath
-                dbg.strokeColor = UIColor.blue.withAlphaComponent(0.6).cgColor
-                dbg.fillColor = UIColor.clear.cgColor
-                dbg.lineWidth = 2
-                dbg.lineDashPattern = [6, 4]
-                dbg.frame = outlineLayer.bounds
-                dbg.zPosition = 999
-                layer.addSublayer(dbg)
-            }
-        }
-        
-        // 3) Animate masks sequentially
-        let count = max(1, maskLayers.count)
-        let per = max(0.05, totalDuration / Double(count))
-        let base = layer.convertTime(CACurrentMediaTime(), from: nil)
-        for (idx, m) in maskLayers.enumerated() {
-            let anim = CABasicAnimation(keyPath: "strokeEnd")
-            anim.fromValue = 0
-            anim.toValue = 1
-            anim.duration = per
-            anim.beginTime = base + (Double(idx) * per)
-            anim.timingFunction = CAMediaTimingFunction(name: .linear)
-            anim.fillMode = .forwards
-            anim.isRemovedOnCompletion = false
-            m.add(anim, forKey: "reveal")
-            // Keep model at 0; animation + fillMode will display progress and final state
-        }
-
-        // If paused after rebuild, immediately pause animations
-        if pause {
-            let pausedTime = layer.convertTime(CACurrentMediaTime(), from: nil)
-            layer.speed = 0
-            layer.timeOffset = pausedTime
-            isPaused = true
-        } else {
-            isPaused = false
-        }
-
-        // Cache current config
-        built = true
-        prevReplayNonce = replayNonce
-        prevCanvasSize = canvasSize
-        prevDuration = totalDuration
-        prevRefCount = referenceStrokes.count
-        prevUserCount = userStrokes.count
-    }
-    
-    // Helpers
-    private func medianLength(_ points: [CGPoint], canvasSize: CGFloat) -> CGFloat {
-        guard points.count > 1 else { return 0 }
-        var len: CGFloat = 0
-        var prev = CGPoint(x: points[0].x * canvasSize, y: points[0].y * canvasSize)
-        for i in 1..<points.count {
-            let p = CGPoint(x: points[i].x * canvasSize, y: points[i].y * canvasSize)
-            let dx = p.x - prev.x
-            let dy = p.y - prev.y
-            len += sqrt(dx*dx + dy*dy)
-            prev = p
-        }
-        return len
-    }
-    private func createBezierPath(from svgPath: String, canvasSize: CGFloat) -> UIBezierPath {
-        let path = UIBezierPath()
-        let components = svgPath.split(separator: " ")
-        var i = 0
-        while i < components.count {
-            let cmd = String(components[i])
-            switch cmd {
-            case "M":
-                if i + 2 < components.count,
-                   let x = Double(components[i+1]),
-                   let y = Double(components[i+2]) {
-                    path.move(to: scaleAndFlipPoint(CGPoint(x: x, y: y), canvasSize: canvasSize))
-                    i += 3
-                } else { i += 1 }
-            case "L":
-                if i + 2 < components.count,
-                   let x = Double(components[i+1]),
-                   let y = Double(components[i+2]) {
-                    path.addLine(to: scaleAndFlipPoint(CGPoint(x: x, y: y), canvasSize: canvasSize))
-                    i += 3
-                } else { i += 1 }
-            case "Q":
-                if i + 4 < components.count,
-                   let x1 = Double(components[i+1]),
-                   let y1 = Double(components[i+2]),
-                   let x = Double(components[i+3]),
-                   let y = Double(components[i+4]) {
-                    let c = scaleAndFlipPoint(CGPoint(x: x1, y: y1), canvasSize: canvasSize)
-                    let e = scaleAndFlipPoint(CGPoint(x: x, y: y), canvasSize: canvasSize)
-                    path.addQuadCurve(to: e, controlPoint: c)
-                    i += 5
-                } else { i += 1 }
-            case "C":
-                if i + 6 < components.count,
-                   let x1 = Double(components[i+1]), let y1 = Double(components[i+2]),
-                   let x2 = Double(components[i+3]), let y2 = Double(components[i+4]),
-                   let x = Double(components[i+5]), let y = Double(components[i+6]) {
-                    let c1 = scaleAndFlipPoint(CGPoint(x: x1, y: y1), canvasSize: canvasSize)
-                    let c2 = scaleAndFlipPoint(CGPoint(x: x2, y: y2), canvasSize: canvasSize)
-                    let e  = scaleAndFlipPoint(CGPoint(x: x,  y: y), canvasSize: canvasSize)
-                    path.addCurve(to: e, controlPoint1: c1, controlPoint2: c2)
-                    i += 7
-                } else { i += 1 }
-            case "Z":
-                path.close()
-                i += 1
-            default:
-                i += 1
-            }
-        }
-        return path
-    }
-    
-    private func createStrokePath(from points: [CGPoint], canvasSize: CGFloat) -> UIBezierPath {
-        let p = UIBezierPath()
-        guard !points.isEmpty else { return p }
-        // Apply 10% inset on each side (draw within 80% centered box)
-        let inset: CGFloat = 0.10
-        let scale: CGFloat = 1.0 - inset * 2.0
-        let scaled = points.map { pt in
-            CGPoint(
-                x: (pt.x * scale + inset) * canvasSize,
-                y: (pt.y * scale + inset) * canvasSize
-            )
-        }
-        p.move(to: scaled[0])
-        for i in 1..<scaled.count { p.addLine(to: scaled[i]) }
-        return p
-    }
-    
-    // Build CAShapeLayer sublayers for each consecutive point pair with per-segment variable widths (round caps/joins)
-    private func buildSegmentSublayers(stroke: Stroke, canvasSize: CGFloat, bbox: CGRect?, color: UIColor, speedSensitivity: Double, pressureSensitivity: Double, sizeFactor: Double) -> [CAShapeLayer] {
-        var pts = stroke.displayPoints
-        if pts.isEmpty { pts = stroke.points }
-        guard pts.count > 0 else { return [] }
-
-        func mapPoint(_ pt: CGPoint) -> CGPoint? {
-            if let bb = bbox, bb.width > 0, bb.height > 0 {
-                let nx = (pt.x - bb.minX) / bb.width
-                let ny = (pt.y - bb.minY) / bb.height
-                return CGPoint(x: nx * canvasSize, y: ny * canvasSize)
-            }
-            return nil
-        }
-
-        let isLikelyNonPencil = pts.allSatisfy { $0.pressure >= 0.999 }
-        func widthFor(_ a: StrokePoint, _ b: StrokePoint) -> CGFloat {
-            let pressureRaw = max(0, min(1, (a.pressure + b.pressure) * 0.5))
-            let speed = max(0.001, (a.speed + b.speed) * 0.5)
-            let minW: CGFloat = 8.0 * CGFloat(sizeFactor)
-            let maxW: CGFloat = 28.0 * CGFloat(sizeFactor)
-            let baseV0: CGFloat = 1500.0
-            let v0: CGFloat = baseV0 / max(0.1, CGFloat(speedSensitivity))
-            let v = speed
-            let factor = 1.0 / (1.0 + v / v0)
-            let pEff = max(0.0, min(1.0, pressureRaw * CGFloat(pressureSensitivity)))
-            let base = (minW + (maxW - minW) * pEff * factor)
-            return base * (isLikelyNonPencil ? 0.5 : 1.0)
-        }
-
-        var layers: [CAShapeLayer] = []
-        if pts.count == 1 {
-            if let p = mapPoint(pts[0].location) {
-                let w = max(1.0, widthFor(pts[0], pts[0]))
-                let r = w * 0.5
-                let circle = UIBezierPath(ovalIn: CGRect(x: p.x - r, y: p.y - r, width: w, height: w))
-                let l = CAShapeLayer()
-                l.path = circle.cgPath
-                l.fillColor = color.cgColor
-                l.strokeColor = nil
-                l.contentsScale = UIScreen.main.scale
-                layers.append(l)
-            }
-            return layers
-        }
-
-        var prevW: CGFloat = 0
-        for i in 0..<(pts.count - 1) {
-            let a = pts[i]
-            let b = pts[i + 1]
-            guard let pa = mapPoint(a.location), let pb = mapPoint(b.location) else { continue }
-            var w = widthFor(a, b)
-            if prevW > 0 { w = 0.7 * prevW + 0.3 * w }
-            prevW = w
-
-            let segPath = UIBezierPath()
-            segPath.move(to: pa)
-            segPath.addLine(to: pb)
-
-            let l = CAShapeLayer()
-            l.path = segPath.cgPath
-            l.strokeColor = color.cgColor
-            l.fillColor = UIColor.clear.cgColor
-            l.lineWidth = w
-            l.lineCap = .round
-            l.lineJoin = .round
-            l.contentsScale = UIScreen.main.scale
-            layers.append(l)
-        }
-        return layers
-    }
-    
-
-    private func createUserPath(from stroke: Stroke, canvasSize: CGFloat, bbox: CGRect?) -> UIBezierPath {
-        let p = UIBezierPath()
-        // Use displayPoints for fidelity (time-series as drawn)
-        let pts = stroke.displayPoints.map { $0.location }
-        guard !pts.isEmpty, let bb = bbox, bb.width > 0, bb.height > 0 else { return p }
-
-        // Map via guide bounding box WITHOUT inset so it fills the panel like the left view
-        let scaled = pts.map { pt in
-            let nx = (pt.x - bb.minX) / bb.width
-            let ny = (pt.y - bb.minY) / bb.height
-            return CGPoint(
-                x: nx * canvasSize,
-                y: ny * canvasSize
-            )
-        }
-
-        if scaled.count == 1 {
-            let c = scaled[0]
-            p.addArc(withCenter: c, radius: max(1, canvasSize * 0.01), startAngle: 0, endAngle: CGFloat.pi * 2, clockwise: true)
-            return p
-        }
-        p.move(to: scaled[0])
-        for i in 1..<scaled.count { p.addLine(to: scaled[i]) }
-        return p
-    }
-    
-    private func createVariableWidthOutlinePath(from stroke: Stroke, canvasSize: CGFloat, bbox: CGRect?) -> UIBezierPath {
-        // Prefer displayPoints for fidelity; fall back to points
-        var pts = stroke.displayPoints
-        if pts.isEmpty { pts = stroke.points }
-        // Single-point stroke => filled circle
-        if pts.count == 1 {
-            let sp = pts[0]
-            func widthFor(_ pressure: CGFloat, _ speed: CGFloat) -> CGFloat {
-                let minW: CGFloat = 8.0
-                let maxW: CGFloat = 28.0
-                let v0: CGFloat = 1500.0
-                let v = max(0.0, speed)
-                let factor = 1.0 / (1.0 + v / v0)
-                return minW + (maxW - minW) * pressure * factor
-            }
-            let p = UIBezierPath()
-            let c: CGPoint = {
-                if let bb = bbox, bb.width > 0, bb.height > 0 {
-                    let nx = (sp.location.x - bb.minX) / bb.width
-                    let ny = (sp.location.y - bb.minY) / bb.height
-                    return CGPoint(x: nx * canvasSize, y: ny * canvasSize)
-                } else {
-                    return CGPoint(x: sp.location.x * canvasSize, y: sp.location.y * canvasSize)
-                }
-            }()
-            let r = widthFor(sp.pressure, sp.speed) * 0.5
-            p.addArc(withCenter: c, radius: r, startAngle: 0, endAngle: .pi * 2, clockwise: true)
-            p.close()
-            return p
-        }
-
-        // Mapping helper
-        let mapPoint: (CGPoint) -> CGPoint = { pt in
-            if let bb = bbox, bb.width > 0, bb.height > 0 {
-                let nx = (pt.x - bb.minX) / bb.width
-                let ny = (pt.y - bb.minY) / bb.height
-                return CGPoint(x: nx * canvasSize, y: ny * canvasSize)
-            } else {
-                return CGPoint(x: pt.x * canvasSize, y: pt.y * canvasSize)
-            }
-        }
-        func widthFor(_ a: StrokePoint, _ b: StrokePoint) -> CGFloat {
-            let pressure = max(0, min(1, (a.pressure + b.pressure) * 0.5))
-            let speed = max(0.001, (a.speed + b.speed) * 0.5)
-            let minW: CGFloat = 8.0
-            let maxW: CGFloat = 28.0
-            let v0: CGFloat = 1500.0
-            let v = speed
-            let factor = 1.0 / (1.0 + v / v0)
-            return (minW + (maxW - minW) * pressure * factor)
-        }
-
-        // Build left/right outlines
-        var left: [CGPoint] = []
-        var right: [CGPoint] = []
-        var prevW: CGFloat = 0
-        for i in 0..<(pts.count - 1) {
-            let a = pts[i]
-            let b = pts[i + 1]
-            let pa = mapPoint(a.location)
-            let pb = mapPoint(b.location)
-            let dx = pb.x - pa.x
-            let dy = pb.y - pa.y
-            let len = max(1e-6, sqrt(dx*dx + dy*dy))
-            var w = widthFor(a, b)
-            if prevW > 0 { w = 0.7 * prevW + 0.3 * w }
-            prevW = w
-            let nx = -dy / len
-            let ny =  dx / len
-            let hx = nx * (w * 0.5)
-            let hy = ny * (w * 0.5)
-            let la = CGPoint(x: pa.x + hx, y: pa.y + hy)
-            let ra = CGPoint(x: pa.x - hx, y: pa.y - hy)
-            let lb = CGPoint(x: pb.x + hx, y: pb.y + hy)
-            let rb = CGPoint(x: pb.x - hx, y: pb.y - hy)
-            if i == 0 {
-                left.append(la)
-                right.append(ra)
-            }
-            left.append(lb)
-            right.append(rb)
-        }
-
-        // Create round caps at ends by appending circles (helps cover joins)
-        let outline = UIBezierPath()
-        if let first = left.first { outline.move(to: first) }
-        for i in 1..<left.count { outline.addLine(to: left[i]) }
-        for i in stride(from: right.count - 1, through: 0, by: -1) { outline.addLine(to: right[i]) }
-        outline.close()
-
-        // Add end caps
-        let startCenter = mapPoint(pts.first!.location)
-        let endCenter = mapPoint(pts.last!.location)
-        // Use first and last segment widths
-        let wStart = widthFor(pts[0], pts[1]) * 0.5
-        let wEnd = widthFor(pts[pts.count-2], pts[pts.count-1]) * 0.5
-        //outline.addArc(withCenter: startCenter, radius: wStart, startAngle: 0, endAngle: .pi * 2, clockwise: true)
-        // outline.addArc(withCenter: endCenter, radius: wEnd, startAngle: 0, endAngle: .pi * 2, clockwise: true)
-
-        return outline
-    }
-    private func scaleAndFlipPoint(_ point: CGPoint, canvasSize: CGFloat) -> CGPoint {
-        // svgPath has been normalized to [0,1] in StrokeAnalyzer; draw within 80% inner box with 10% padding
-        let inset: CGFloat = 0.10
-        let scale: CGFloat = 1.0 - inset * 2.0
-        return CGPoint(
-            x: (point.x * scale + inset) * canvasSize,
-            y: (point.y * scale + inset) * canvasSize
-        )
-    }
-}
-
-

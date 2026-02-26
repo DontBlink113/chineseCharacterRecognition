@@ -48,176 +48,6 @@ struct Stroke: Identifiable, Equatable {
     var displayPoints: [StrokePoint] // All points for smooth rendering
     var startTime: TimeInterval
     var endTime: TimeInterval
-    private(set) var substrokes: [Substroke] = []
-    
-    /// A substroke is a continuous segment of a stroke that moves in a single direction
-    struct Substroke: Identifiable, Equatable {
-        let id: UUID
-        let startIndex: Int
-        let endIndex: Int
-        let points: [StrokePoint]
-        var normalizedCenter: CGPoint? = nil
-        
-        /// The direction vector of the substroke (from start to end)
-        var direction: CGVector {
-            guard let first = points.first, let last = points.last else {
-                return .zero
-            }
-            return CGVector(dx: last.location.x - first.location.x,
-                          dy: last.location.y - first.location.y)
-        }
-        
-        /// The length of the substroke
-        var magnitude: CGFloat {
-            return sqrt(direction.dx * direction.dx + direction.dy * direction.dy)
-        }
-        
-        /// The center point of the substroke's bounding box
-        var center: CGPoint {
-            let xs = points.map { $0.location.x }
-            let ys = points.map { $0.location.y }
-            guard !xs.isEmpty, !ys.isEmpty else { return .zero }
-            
-            let minX = xs.min() ?? 0
-            let maxX = xs.max() ?? 0
-            let minY = ys.min() ?? 0
-            let maxY = ys.max() ?? 0
-            
-            return CGPoint(x: (minX + maxX) / 2, y: (minY + maxY) / 2)
-        }
-        
-        /// The angle of the substroke in radians in standard math orientation (0 = right, π/2 = up, π = left, 3π/2 = down)
-        var angle: CGFloat {
-            // In UIKit/SwiftUI, Y increases downward. Invert Y to match math convention (Y up).
-            // Then normalize to [0, 2π), so a pure down stroke maps to 3π/2.
-            let raw = atan2(-direction.dy, direction.dx)
-            return raw >= 0 ? raw : raw + 2 * .pi
-        }
-        
-        /// The normalized direction vector (unit vector)
-        var normalizedDirection: CGVector {
-            let mag = max(magnitude, .ulpOfOne) // Avoid division by zero
-            return CGVector(dx: direction.dx / mag, dy: direction.dy / mag)
-        }
-        
-        init(points: [StrokePoint], startIndex: Int, endIndex: Int) {
-            self.id = UUID()
-            self.points = points
-            self.startIndex = startIndex
-            self.endIndex = endIndex
-            self.normalizedCenter = nil
-        }
-    }
-    
-    /// Detects corners in the stroke and splits it into substrokes
-    /// - Parameter distanceThreshold: Minimum distance between points to consider for corner detection (default: 2.6)
-    ///   Note: This should only be called after the stroke is complete for performance reasons
-    internal mutating func detectSubstrokes(distanceThreshold: CGFloat = 2.6, cornerRatioThreshold: CGFloat = 1.1, curveRatioThreshold: CGFloat = 1.08) {
-        // Handle cases with fewer than 3 points
-        guard !points.isEmpty else { return }
-        
-        // For 1 or 2 points, create a single substroke
-        if points.count <= 2 {
-            substrokes = [Substroke(points: points, startIndex: 0, endIndex: points.count - 1)]
-            return
-        }
-        
-        var cornerIndices = [0] // Start with the first point
-        
-        // Find corners by analyzing angle changes
-        for i in 1..<points.count-1 {
-            let prevPoint = points[i-1].location
-            let currPoint = points[i].location
-            let nextPoint = points[i+1].location
-            
-            let d1 = CGPoint(x: (nextPoint.x - prevPoint.x), y: (nextPoint.y - prevPoint.y))
-            let d2  = CGPoint(x: (currPoint.x - prevPoint.x), y: (currPoint.y - prevPoint.y))
-            let d3 = CGPoint(x: (nextPoint.x - currPoint.x), y: (nextPoint.y - currPoint.y))
-            
-            let distance1 = sqrt(d1.x * d1.x + d1.y * d1.y)
-            let distance2 = sqrt(d2.x * d2.x + d2.y * d2.y) + sqrt(d3.x * d3.x + d3.y * d3.y)
-            
-            
-            let ratio = distance1 > 0 ? (distance2 / distance1) : 1.0
-            if ratio > cornerRatioThreshold {
-                cornerIndices.append(i)
-            }
-        }
-        
-        // Add the last point
-        cornerIndices.append(points.count - 1)
-        
-        // Build prefix sums of arc length to enable O(1) segment length queries
-        var prefixLen = Array(repeating: CGFloat(0), count: points.count)
-        for i in 1..<points.count {
-            let a = points[i-1].location
-            let b = points[i].location
-            prefixLen[i] = prefixLen[i-1] + sqrt((b.x - a.x)*(b.x - a.x) + (b.y - a.y)*(b.y - a.y))
-        }
-        
-        // Insert extra pivots in segments that curve gradually (arc/chord > threshold)
-        var extraPivots: [Int] = []
-        if curveRatioThreshold > 1.0 {
-            for seg in 0..<cornerIndices.count-1 {
-                var segStart = cornerIndices[seg]
-                let segEnd = cornerIndices[seg+1]
-                var i = segStart + 1
-                while i <= segEnd {
-                    let run = prefixLen[i] - prefixLen[segStart]
-                    let a = points[segStart].location
-                    let b = points[i].location
-                    let chord = sqrt((b.x - a.x)*(b.x - a.x) + (b.y - a.y)*(b.y - a.y))
-                    if chord > 0, run / chord > curveRatioThreshold {
-                        var mid = (segStart + i) / 2
-                        if mid <= segStart { mid = segStart + 1 }
-                        if mid >= segEnd { mid = segEnd - 1 }
-                        if mid > segStart && mid < segEnd { extraPivots.append(mid) }
-                        segStart = mid
-                        i = segStart + 1
-                    } else {
-                        i += 1
-                    }
-                }
-            }
-        }
-        
-        // Merge and sort indices
-        var all = Set(cornerIndices)
-        for p in extraPivots { all.insert(p) }
-        let indices = all.sorted()
-        
-        // Create substrokes between pivots
-        var newSubstrokes: [Substroke] = []
-        for i in 0..<indices.count-1 {
-            let start = indices[i]
-            let end = indices[i+1]
-            if end >= start {
-                let substrokePoints = Array(points[start...end])
-                newSubstrokes.append(Substroke(points: substrokePoints, startIndex: start, endIndex: end))
-            }
-        }
-        
-        self.substrokes = newSubstrokes
-    }
-
-    /// Assigns normalized centers to each substroke using bounding-box normalization.
-    /// Mapping: nx = (x - minX) / width, ny = (y - minY) / height, clamped to [0,1].
-    /// - Parameter referenceRect: The rectangle to normalize against (typically the character bounding box)
-    internal mutating func assignNormalizedCenters(relativeTo referenceRect: CGRect) {
-        guard referenceRect.width > 0, referenceRect.height > 0 else { return }
-        var updated: [Substroke] = []
-        updated.reserveCapacity(substrokes.count)
-        for var s in substrokes {
-            let nx = (s.center.x - referenceRect.minX) / referenceRect.width
-            let ny = (s.center.y - referenceRect.minY) / referenceRect.height
-            // Clamp to [0,1] to ensure values are within bounds even with noise
-            let clampedX = max(0, min(1, nx))
-            let clampedY = max(0, min(1, ny))
-            s.normalizedCenter = CGPoint(x: clampedX, y: clampedY)
-            updated.append(s)
-        }
-        self.substrokes = updated
-    }
     
     /// The bounding rectangle that contains all points in the stroke
     var boundingRect: CGRect {
@@ -281,21 +111,11 @@ struct CharacterDrawing: Identifiable, Equatable {
         strokes.reduce(0) { $0 + $1.points.count }
     }
     
-    /// Total number of substrokes
-    var totalSubstrokes: Int {
-        strokes.reduce(0) { $0 + $1.substrokes.count }
-    }
-    
     /// Average stroke speed in points per second
     var averageStrokeSpeed: Double {
         guard !strokes.isEmpty else { return 0 }
         let totalDuration = duration > 0 ? duration : 0.1 // Avoid division by zero
         return Double(totalPoints) / totalDuration
-    }
-    
-    /// List of all substrokes across all strokes
-    var allSubstrokes: [Stroke.Substroke] {
-        strokes.flatMap { $0.substrokes }
     }
     
     /// The bounding rectangle that contains all strokes in the character
@@ -364,31 +184,6 @@ struct CharacterDrawing: Identifiable, Equatable {
         return extended
     }
 
-    /// Bounding box computed from substroke centers (not ink), across all strokes
-    var centerBasedBoundingRect: CGRect {
-        let centers: [CGPoint] = strokes.flatMap { stroke in
-            stroke.substrokes.map { $0.center }
-        }
-        guard !centers.isEmpty else { return .zero }
-        let xs = centers.map { $0.x }
-        let ys = centers.map { $0.y }
-        let minX = xs.min() ?? 0
-        let maxX = xs.max() ?? 0
-        let minY = ys.min() ?? 0
-        let maxY = ys.max() ?? 0
-        var rect = CGRect(x: minX, y: minY, width: maxX - minX, height: maxY - minY)
-        if rect.width == 0 { rect.size.width = 1 }
-        if rect.height == 0 { rect.size.height = 1 }
-        return rect
-    }
-
-    /// Assign normalized centers for all substrokes in this character using the character bounding rect and its center
-    mutating func assignNormalizedCentersToSubstrokes() {
-        let ref = centerBasedBoundingRect
-        for i in strokes.indices {
-            strokes[i].assignNormalizedCenters(relativeTo: ref)
-        }
-    }
 }
 
 /// A view model to manage the drawing state
@@ -397,10 +192,6 @@ class DrawingViewModel: ObservableObject {
     @Published private(set) var currentStroke: Stroke?
     @Published private(set) var currentCharacter: CharacterDrawing
     @Published private(set) var characters: [CharacterDrawing] = []
-    
-    // Live-tunable substroke segmentation thresholds
-    @Published var cornerRatioThreshold: CGFloat = 1.1
-    @Published var curveRatioThreshold: CGFloat = 1.08
     
     // Point sampling settings
     private let minimumTimeInterval: TimeInterval = 0.05 // 50ms
@@ -496,7 +287,8 @@ class DrawingViewModel: ObservableObject {
         lastPoint = location
         let p = max(0.0, min(1.0, pressure))
         let point = StrokePoint(location: location, timestamp: now, pressure: p, speed: 0)
-        currentStroke = Stroke(points: [point])
+        // Create stroke with unique ID and initial display point
+        currentStroke = Stroke(id: UUID(), points: [point], displayPoints: [point])
     }
 
     /// Call this when the touch moves with pressure
@@ -545,19 +337,6 @@ class DrawingViewModel: ObservableObject {
                                      timestamp: Date().timeIntervalSince1970))
         }
         
-        // Perform substroke detection for all strokes with 2+ points
-        // Only process if we have enough points to make it worthwhile
-        if stroke.points.count >= 2 {
-            // Create a copy to avoid mutating the stroke while it's being used for drawing
-            var strokeCopy = stroke
-            strokeCopy.detectSubstrokes(
-                distanceThreshold: 2.6,
-                cornerRatioThreshold: cornerRatioThreshold,
-                curveRatioThreshold: curveRatioThreshold
-            )
-            stroke = strokeCopy
-        }
-        
         // Add the processed stroke to the current character
         currentCharacter.addStroke(stroke)
         currentStroke = nil
@@ -571,9 +350,7 @@ class DrawingViewModel: ObservableObject {
     /// Complete the current character and start a new one
     func completeCurrentCharacter() {
         guard !currentCharacter.strokes.isEmpty else { return }
-        var finalized = currentCharacter
-        finalized.assignNormalizedCentersToSubstrokes()
-        characters.append(finalized)
+        characters.append(currentCharacter)
         currentCharacter = CharacterDrawing()
     }
     
@@ -589,7 +366,7 @@ class DrawingViewModel: ObservableObject {
     
     /// Clear all strokes and characters
     func clear() {
-        currentCharacter.clear()
+        currentCharacter = CharacterDrawing() // Create new instance to trigger @Published update
         characters.removeAll()
         currentStroke = nil
     }

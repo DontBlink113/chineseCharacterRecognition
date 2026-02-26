@@ -13,17 +13,17 @@ struct FeedbackView: View {
                 Text("Hi! My name is Keane")
                     .font(.title3)
                     .fontWeight(.semibold)
-                    .foregroundColor(Color("Blue 900"))
+                    .foregroundColor(Color("Primary900"))
                     .padding(.top, 8)
 
                 Text("I'm building intelligent software for learning Chinese characters, and your feedback is crucial to help me improve this app.")
                     .font(.body)
-                    .foregroundColor(Color("Neutral 700"))
+                    .foregroundColor(Color("Primary700"))
                     .lineSpacing(6)
 
                 Text("Please email me with any suggestions and I respond and make changes as soon as I can! \n\nAll the best,\nKeane")
                     .font(.body)
-                    .foregroundColor(Color("Neutral 700"))
+                    .foregroundColor(Color("Primary700"))
                     .lineSpacing(6)
 
                 Divider()
@@ -31,12 +31,12 @@ struct FeedbackView: View {
                 VStack(alignment: .leading, spacing: 8) {
                     Text("Email")
                         .font(.headline)
-                        .foregroundColor(Color("Blue 900"))
+                        .foregroundColor(Color("Primary900"))
 
                     HStack(spacing: 12) {
                         Text(feedbackEmail)
                             .font(.system(.body, design: .monospaced))
-                            .foregroundColor(Color("Blue 900"))
+                            .foregroundColor(Color("Primary900"))
                             .lineLimit(1)
                             .truncationMode(.middle)
                         Spacer()
@@ -53,7 +53,7 @@ struct FeedbackView: View {
                     if copied {
                         Text("Copied to clipboard")
                             .font(.caption)
-                            .foregroundColor(Color("Neutral 700"))
+                            .foregroundColor(Color("Primary700"))
                     }
                 }
 
